@@ -38,6 +38,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "gl/glshape.h"
 #include "gl/gltex.h"
 #include "model/nifmodel.h"
+#include "model/undocommands.h"
 #include "ui/settingsdialog.h"
 #include "ui/widgets/fileselect.h"
 #include "fp32vec4.hpp"
@@ -523,6 +524,11 @@ void GLView::paintGL()
 
 	cx->setViewTransform( scene->view, int( cfg.upAxis ), envMapRotation );
 	auto &	globalUniforms = *( cx->globalUniforms );
+
+	// Store the camera for gizmo picking between frames
+	if ( gizmoEnabled )
+		gizmo.setCamera( scene->view, Matrix4( &( globalUniforms.projectionMatrix[0][0] ) ), QSize( width(), height() ) );
+
 	globalUniforms.toneMapScale = toneMapping;
 	globalUniforms.brightnessScale = brightnessScale;
 	globalUniforms.glowScale = ( scene->hasOption(Scene::DoGlow) ? glowScale : 0.0f );
@@ -645,6 +651,10 @@ void GLView::paintGL()
 	// Draw the model
 	glDisable( GL_BLEND );
 	scene->draw();
+
+	// Draw the gizmo on top of everything except the axes overlay
+	if ( updateGizmo() )
+		gizmo.draw( scene, gizmoHover, gizmoActive, Settings::lineWidthAxes * 0.5f );
 
 	if ( scene->hasOption(Scene::ShowAxes) ) {
 		// Resize viewport to small corner of screen
@@ -813,6 +823,152 @@ void GLView::setGlowScale( int value )
 void GLView::setDebugMode( DebugMode mode )
 {
 	debugMode = mode;
+}
+
+void GLView::setMoveGizmo( bool enabled )
+{
+	// Ignore the other gizmos being switched off
+	if ( enabled || gizmo.getMode() == TransformGizmo::Translate )
+		setGizmo( enabled, TransformGizmo::Translate );
+}
+
+void GLView::setRotateGizmo( bool enabled )
+{
+	if ( enabled || gizmo.getMode() == TransformGizmo::Rotate )
+		setGizmo( enabled, TransformGizmo::Rotate );
+}
+
+void GLView::setScaleGizmo( bool enabled )
+{
+	if ( enabled || gizmo.getMode() == TransformGizmo::Scale )
+		setGizmo( enabled, TransformGizmo::Scale );
+}
+
+void GLView::setGizmo( bool enabled, TransformGizmo::Mode mode )
+{
+	if ( gizmoActive != TransformGizmo::HandleNone )
+		endGizmoDrag( true );
+
+	gizmoEnabled = enabled;
+	gizmo.setMode( mode );
+	gizmoHover = TransformGizmo::HandleNone;
+	update();
+}
+
+QModelIndex GLView::gizmoTarget() const
+{
+	if ( !(model && scene->currentBlock.isValid()) )
+		return QModelIndex();
+
+	QModelIndex iBlock = scene->currentBlock;
+	if ( !model->blockInherits( iBlock, "NiAVObject" ) || !scene->nodes.get( iBlock ) )
+		return QModelIndex();
+
+	QModelIndex iTransform = model->getIndex( iBlock, "Transform" );
+	if ( !iTransform.isValid() )
+		iTransform = iBlock;
+
+	switch ( gizmo.getMode() ) {
+	case TransformGizmo::Rotate:
+		return model->getIndex( iTransform, "Rotation" );
+	case TransformGizmo::Scale:
+		return model->getIndex( iTransform, "Scale" );
+	default:
+		return model->getIndex( iTransform, "Translation" );
+	}
+}
+
+bool GLView::updateGizmo()
+{
+	if ( !(gizmoEnabled && scene->isSelModeObject()) )
+		return false;
+
+	if ( !gizmoTarget().isValid() )
+		return false;
+
+	Node * node = scene->nodes.get( scene->currentBlock );
+	gizmo.setOrigin( node->worldTrans().translation );
+	return true;
+}
+
+bool GLView::beginGizmoDrag( TransformGizmo::Handle handle, const QPointF & pos )
+{
+	QModelIndex iValue = gizmoTarget();
+	if ( !iValue.isValid() || !gizmo.beginDrag( handle, pos ) )
+		return false;
+
+	Node * node = scene->nodes.get( scene->currentBlock );
+
+	// The gizmo works in world space, the Translation and Rotation are relative to the parent
+	Transform parent;
+	if ( node->parentNode() )
+		parent = node->parentNode()->worldTrans();
+
+	gizmoParentRot = parent.rotation;
+	gizmoParentInv = parent.rotation.inverted();
+	gizmoParentScale = (parent.scale != 0.0f) ? parent.scale : 1.0f;
+
+	// Undo commands go through setData() which requires the value column
+	gizmoValue = iValue.sibling( iValue.row(), NifModel::ValueCol );
+	gizmoStartValue = gizmoValue.data( Qt::EditRole );
+
+	switch ( gizmo.getMode() ) {
+	case TransformGizmo::Rotate:
+		gizmoStartRotation = model->get<Matrix>( gizmoValue );
+		break;
+	case TransformGizmo::Scale:
+		gizmoStartScale = model->get<float>( gizmoValue );
+		break;
+	default:
+		gizmoStartTranslation = model->get<Vector3>( gizmoValue );
+		break;
+	}
+
+	gizmoActive = handle;
+
+	update();
+	return true;
+}
+
+void GLView::endGizmoDrag( bool commit )
+{
+	gizmoActive = TransformGizmo::HandleNone;
+
+	if ( !(model && gizmoValue.isValid()) ) {
+		gizmoValue = QModelIndex();
+		return;
+	}
+
+	bool changed;
+	QString valueName;
+	switch ( gizmo.getMode() ) {
+	case TransformGizmo::Rotate:
+		changed = !(model->get<Matrix>( gizmoValue ) == gizmoStartRotation);
+		valueName = tr( "Rotation" );
+		break;
+	case TransformGizmo::Scale:
+		changed = (model->get<float>( gizmoValue ) != gizmoStartScale);
+		valueName = tr( "Scale" );
+		break;
+	default:
+		changed = !(model->get<Vector3>( gizmoValue ) == gizmoStartTranslation);
+		valueName = tr( "Translation" );
+		break;
+	}
+
+	QVariant newValue = gizmoValue.data( Qt::EditRole );
+
+	// Restore the original value so that the undo command records the
+	// start of the drag rather than every intermediate mouse move
+	model->setData( gizmoValue, gizmoStartValue, Qt::EditRole );
+
+	if ( commit && changed ) {
+		ChangeValueCommand::createTransaction();
+		model->undoStack->push( new ChangeValueCommand( gizmoValue, newValue, newValue.value<NifValue>().toString(), valueName, model ) );
+	}
+
+	gizmoValue = QModelIndex();
+	update();
 }
 
 void GLView::setVisMode( Scene::VisMode mode, bool checked )
@@ -1180,6 +1336,9 @@ void GLView::flush()
 
 void GLView::setNif( NifModel * nif )
 {
+	if ( gizmoActive != TransformGizmo::HandleNone )
+		endGizmoDrag( true );
+
 	if ( model ) {
 		// disconnect( model ) may not work with new Qt5 syntax...
 		// it says the calls need to remain symmetric to the connect() ones.
@@ -1827,6 +1986,9 @@ void GLView::dropEvent( QDropEvent * e )
 
 void GLView::focusOutEvent( QFocusEvent * )
 {
+	if ( gizmoActive != TransformGizmo::HandleNone )
+		endGizmoDrag( true );
+
 	kbdState = 0;
 	mouseButtonState = 0;
 }
@@ -1890,6 +2052,11 @@ void GLView::keyPressEvent( QKeyEvent * event )
 	} else {
 		switch ( event->key() ) {
 		case Qt::Key_Escape:
+			if ( gizmoActive != TransformGizmo::HandleNone ) {
+				endGizmoDrag( false );
+				return;
+			}
+
 			doCompile = 1;
 
 			if ( view == ViewWalk )
@@ -1951,6 +2118,37 @@ void GLView::mouseDoubleClickEvent( QMouseEvent * )
 void GLView::mouseMoveEvent( QMouseEvent * event )
 {
 	auto	newPos = getQMouseEventPosition( event );
+
+	if ( gizmoActive != TransformGizmo::HandleNone ) {
+		if ( gizmo.getMode() == TransformGizmo::Rotate ) {
+			// Ctrl snaps to 5 degree increments
+			float snap = (event->modifiers() & Qt::ControlModifier) ? 5.0f : 0.0f;
+
+			// Apply the world space rotation in the parent space of the object
+			Matrix rot = gizmo.dragRotation( newPos, snap );
+			model->set<Matrix>( gizmoValue, gizmoParentInv * rot * gizmoParentRot * gizmoStartRotation );
+		} else if ( gizmo.getMode() == TransformGizmo::Scale ) {
+			// Ctrl snaps to 5% increments, the scale is relative so it does not depend on the parents
+			float snap = (event->modifiers() & Qt::ControlModifier) ? 0.05f : 0.0f;
+			model->set<float>( gizmoValue, gizmoStartScale * gizmo.dragScale( newPos, snap ) );
+		} else {
+			// Convert the world space offset into the parent space of the object
+			Vector3 delta = gizmo.dragDelta( newPos );
+			model->set<Vector3>( gizmoValue, gizmoStartTranslation + gizmoParentInv * delta / gizmoParentScale );
+		}
+
+		lastPos = newPos;
+		return;
+	}
+
+	if ( gizmoEnabled && event->buttons() == Qt::NoButton ) {
+		auto handle = updateGizmo() ? gizmo.hitTest( newPos ) : TransformGizmo::HandleNone;
+		if ( handle != gizmoHover ) {
+			gizmoHover = handle;
+			update();
+		}
+	}
+
 	float	dx = newPos.x() - lastPos.x();
 	float	dy = newPos.y() - lastPos.y();
 	Qt::MouseButtons	buttonMask = Qt::MouseButtons( mouseButtonState );
@@ -1988,14 +2186,41 @@ void GLView::mousePressEvent( QMouseEvent * event )
 		return;
 	}
 
+	if ( gizmoActive != TransformGizmo::HandleNone ) {
+		// Right click cancels the drag
+		if ( event->button() == Qt::RightButton ) {
+			endGizmoDrag( false );
+			gizmoCancelRelease = true;
+		}
+		return;
+	}
+
 	lastPos = getQMouseEventPosition( event );
 
 	pressPos = lastPos;
+
+	if ( event->button() == Qt::LeftButton && !kbd( Key_MoveCam ) && updateGizmo() ) {
+		auto handle = gizmo.hitTest( lastPos );
+		if ( handle != TransformGizmo::HandleNone )
+			beginGizmoDrag( handle, lastPos );
+	}
 }
 
 void GLView::mouseReleaseEvent( QMouseEvent * event )
 {
 	mouseButtonState &= ~( std::uint32_t( event->button() ) );
+
+	if ( gizmoActive != TransformGizmo::HandleNone ) {
+		if ( event->button() == Qt::LeftButton )
+			endGizmoDrag( true );
+		return;
+	}
+
+	// Neither select nor open the context menu for the right click that cancelled a drag
+	if ( gizmoCancelRelease && event->button() == Qt::RightButton ) {
+		gizmoCancelRelease = false;
+		return;
+	}
 
 	auto	evtPos = getQMouseEventPosition( event );
 #ifdef Q_OS_LINUX

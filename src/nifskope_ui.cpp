@@ -68,6 +68,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QProgressBar>
 #include <QMessageBox>
 #include <QSettings>
@@ -248,6 +249,156 @@ void NifSkope::initActions()
 
 	selectActions = agroup( { ui->aSelectObject, ui->aSelectVertex }, true );
 	connect( selectActions, &QActionGroup::triggered, ogl->getScene(), &Scene::updateSelectMode );
+
+	// Translate Gizmo
+	auto gizmoIcon = []() {
+		QPixmap pix( 64, 64 );
+		pix.fill( Qt::transparent );
+
+		QPainter p( &pix );
+		p.setRenderHint( QPainter::Antialiasing );
+
+		auto arrow = [&p]( QPointF tip, QColor color ) {
+			QPointF o( 22, 42 );
+			QLineF shaft( o, tip );
+			QLineF head = shaft;
+			head.setLength( shaft.length() - 12 );
+
+			p.setPen( QPen( color, 5, Qt::SolidLine, Qt::RoundCap ) );
+			p.drawLine( QLineF( o, head.p2() ) );
+
+			QLineF n = head.normalVector();
+			n.setLength( 7 );
+			QPointF side = n.p2() - n.p1();
+
+			p.setPen( Qt::NoPen );
+			p.setBrush( color );
+			p.drawPolygon( QPolygonF( { tip, head.p2() + side, head.p2() - side } ) );
+		};
+
+		arrow( { 60, 42 }, QColor( 235, 56, 56 ) );  // X
+		arrow( { 50, 14 }, QColor( 92, 220, 62 ) );  // Y
+		arrow( { 22, 2 }, QColor( 62, 118, 255 ) );  // Z
+
+		p.setPen( Qt::NoPen );
+		p.setBrush( QColor( 240, 240, 240 ) );
+		p.drawRect( QRectF( 17, 37, 10, 10 ) );
+
+		return QIcon( pix );
+	};
+
+	// Rotate Gizmo
+	auto rotateIcon = []() {
+		QPixmap pix( 64, 64 );
+		pix.fill( Qt::transparent );
+
+		QPainter p( &pix );
+		p.setRenderHint( QPainter::Antialiasing );
+		p.setBrush( Qt::NoBrush );
+
+		// Gyroscope style rings around the center
+		QPointF c( 32, 32 );
+		p.translate( c );
+
+		p.setPen( QPen( QColor( 62, 118, 255 ), 4.5 ) );  // Z
+		p.drawEllipse( QPointF(), 27, 11 );
+
+		p.setPen( QPen( QColor( 235, 56, 56 ), 4.5 ) );   // X
+		p.drawEllipse( QPointF(), 11, 27 );
+
+		p.rotate( 45 );
+		p.setPen( QPen( QColor( 92, 220, 62 ), 4.5 ) );   // Y
+		p.drawEllipse( QPointF(), 11, 27 );
+		p.resetTransform();
+
+		p.setPen( Qt::NoPen );
+		p.setBrush( QColor( 240, 240, 240 ) );
+		p.drawEllipse( c, 4.5, 4.5 );
+
+		return QIcon( pix );
+	};
+
+	auto aGizmo = new QAction( gizmoIcon(), tr( "Move Gizmo" ), this );
+	aGizmo->setObjectName( "aGizmo" );
+	aGizmo->setCheckable( true );
+	// M is already used by the viewport (continuous redraw while held)
+	aGizmo->setShortcut( { "V" } );
+	aGizmo->setToolTip( tr( "Move Gizmo (V)\nDrag the arrows, planes or center of the gizmo to move the selected object.\n"
+		"Axes are always world aligned. Esc or right click cancels a drag." ) );
+	connect( aGizmo, &QAction::toggled, ogl, &GLView::setMoveGizmo );
+	allActions << aGizmo;
+
+	auto aRotateGizmo = new QAction( rotateIcon(), tr( "Rotate Gizmo" ), this );
+	aRotateGizmo->setObjectName( "aRotateGizmo" );
+	aRotateGizmo->setCheckable( true );
+	aRotateGizmo->setShortcut( { "R" } );
+	aRotateGizmo->setToolTip( tr( "Rotate Gizmo (R)\nDrag a ring to rotate the selected object around that world axis,\n"
+		"or the outer ring to rotate around the view axis. Hold Ctrl to snap to 5 degrees.\n"
+		"Axes are always world aligned. Esc or right click cancels a drag." ) );
+	connect( aRotateGizmo, &QAction::toggled, ogl, &GLView::setRotateGizmo );
+	allActions << aRotateGizmo;
+
+	// Scale Gizmo
+	auto scaleIcon = []() {
+		QPixmap pix( 64, 64 );
+		pix.fill( Qt::transparent );
+
+		QPainter p( &pix );
+		p.setRenderHint( QPainter::Antialiasing );
+
+		auto arm = [&p]( QPointF tip, QColor color ) {
+			QPointF o( 22, 42 );
+			p.setPen( QPen( color, 5, Qt::SolidLine, Qt::RoundCap ) );
+			p.drawLine( o, tip );
+
+			p.setPen( Qt::NoPen );
+			p.setBrush( color );
+			p.drawRect( QRectF( tip - QPointF( 6.5, 6.5 ), QSizeF( 13, 13 ) ) );
+		};
+
+		arm( { 56, 42 }, QColor( 235, 56, 56 ) );  // X
+		arm( { 47, 17 }, QColor( 92, 220, 62 ) );  // Y
+		arm( { 22, 8 }, QColor( 62, 118, 255 ) );  // Z
+
+		p.setPen( Qt::NoPen );
+		p.setBrush( QColor( 240, 240, 240 ) );
+		p.drawRect( QRectF( 15, 35, 14, 14 ) );
+
+		return QIcon( pix );
+	};
+
+	auto aScaleGizmo = new QAction( scaleIcon(), tr( "Scale Gizmo" ), this );
+	aScaleGizmo->setObjectName( "aScaleGizmo" );
+	aScaleGizmo->setCheckable( true );
+	aScaleGizmo->setShortcut( { "U" } );
+	aScaleGizmo->setToolTip( tr( "Scale Gizmo (U)\nDrag any handle to scale the selected object uniformly\n"
+		"(NIF objects have a single scale value). Drag outward to grow, inward to shrink;\n"
+		"from the center box drag right/up to grow. Hold Ctrl to snap to 5% steps.\n"
+		"Esc or right click cancels a drag." ) );
+	connect( aScaleGizmo, &QAction::toggled, ogl, &GLView::setScaleGizmo );
+	allActions << aScaleGizmo;
+
+	// Only one gizmo at a time, but all can be off
+	QVector<QAction *> gizmoActions = { aGizmo, aRotateGizmo, aScaleGizmo };
+	for ( auto a : gizmoActions ) {
+		connect( a, &QAction::toggled, [a, gizmoActions]( bool checked ) {
+			if ( !checked )
+				return;
+
+			for ( auto other : gizmoActions ) {
+				if ( other != a )
+					other->setChecked( false );
+			}
+		} );
+	}
+
+	// Place after the select mode buttons
+	auto renderActions = ui->tRender->actions();
+	int iVertex = renderActions.indexOf( ui->aSelectVertex );
+	ui->tRender->insertActions( renderActions.value( iVertex + 1 ), { aGizmo, aRotateGizmo, aScaleGizmo } );
+
+	ui->mRender->insertActions( ui->aViewTop, { aGizmo, aRotateGizmo, aScaleGizmo } );
+	ui->mRender->insertSeparator( ui->aViewTop );
 
 	showActions = agroup( { ui->aShowAxes, ui->aShowGrid, ui->aShowNodes, ui->aShowCollision,
 						  ui->aShowConstraints, ui->aShowMarkers, ui->aShowHidden, ui->aDoSkinning
