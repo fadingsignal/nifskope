@@ -34,6 +34,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define GLVIEW_H_INCLUDED
 
 #include "gl/glscene.h"
+#include "gl/glgizmo.h"
 #include "model/nifmodel.h"
 
 #include <QOpenGLWindow> // Inherited
@@ -167,6 +168,12 @@ public slots:
 	void update3D();
 	void selectPBRCubeMap();
 	void update_GL( [[maybe_unused]] int tmp ) { update(); }
+	//! Toggles the move gizmo for the selected object
+	void setMoveGizmo( bool );
+	//! Toggles the rotate gizmo for the selected object
+	void setRotateGizmo( bool );
+	//! Toggles the uniform scale gizmo for the selected object
+	void setScaleGizmo( bool );
 
 signals:
 	void clicked( const QModelIndex & );
@@ -291,6 +298,30 @@ private:
 	int convertKeyCode( int n ) const;
 	inline bool kbd( int n ) const;
 	void transformItem( float dx, float dy );
+
+	void setGizmo( bool enabled, TransformGizmo::Mode mode );
+	//! Returns the Translation, Rotation or Scale index (depending on the gizmo mode) of the selected object, if it can be transformed
+	QModelIndex gizmoTarget() const;
+	//! Positions the gizmo on the selected object, returns false if there is nothing to transform
+	bool updateGizmo();
+	bool beginGizmoDrag( TransformGizmo::Handle handle, const QPointF & pos );
+	void endGizmoDrag( bool commit );
+
+	TransformGizmo gizmo;
+	bool gizmoEnabled = false;
+	//! Set when a right click cancelled a drag, so that its release does not open the context menu
+	bool gizmoCancelRelease = false;
+	TransformGizmo::Handle gizmoHover = TransformGizmo::HandleNone;
+	TransformGizmo::Handle gizmoActive = TransformGizmo::HandleNone;
+	//! The Translation, Rotation or Scale value being edited
+	QPersistentModelIndex gizmoValue;
+	QVariant gizmoStartValue;
+	Vector3 gizmoStartTranslation;
+	Matrix gizmoStartRotation;
+	float gizmoStartScale = 1.0;
+	Matrix gizmoParentRot;
+	Matrix gizmoParentInv;
+	float gizmoParentScale = 1.0;
 
 public:
 	struct Settings
