@@ -67,6 +67,7 @@ static const QString default_ns = "#FFFF8080n";
 static const QString cube_sk = "textures/cubemaps/bleakfallscube_e.dds";
 static const QString cube_fo4 = "textures/shared/cubemaps/mipblur_defaultoutside1.dds";
 static const QString grayCube = "#FF555555c";
+static const QString magentaCube = "#FFFF00FFc";
 static const QString pbr_lut_sf = "#sfpbr.dds";
 
 
@@ -782,7 +783,10 @@ bool Renderer::setupProgramCE1( const NifModel * nif, Program * prog, Shape * me
 			QString	fname = bsprop->fileName( 4 );
 			const QString *	cube = &fname;
 			if ( hasCubeMap && ( fname.isEmpty() || !scene->bindCube( fname ) ) ) {
-				cube = ( nifVersion < 151 ? ( nifVersion < 128 ? &cube_sk : &cube_fo4 ) : &cfg.cubeMapPathFO76 );
+				if ( !fname.isEmpty() && TexCache::highlightMissingFiles )
+					cube = &magentaCube;
+				else
+					cube = ( nifVersion < 151 ? ( nifVersion < 128 ? &cube_sk : &cube_fo4 ) : &cfg.cubeMapPathFO76 );
 				hasCubeMap = scene->bindCube( *cube );
 			}
 			if ( !hasCubeMap ) [[unlikely]]
@@ -875,8 +879,11 @@ bool Renderer::setupProgramCE1( const NifModel * nif, Program * prog, Shape * me
 					fname = cube;
 
 				fn->glActiveTexture( GL_TEXTURE0 + texunit );
-				if ( !scene->bindCube( fname ) && !scene->bindCube( cube ) && !scene->bindCube( grayCube, 1 ) )
-					return false;
+				if ( !scene->bindCube( fname ) ) {
+					const QString &	fallback = ( TexCache::highlightMissingFiles && fname != cube ? magentaCube : cube );
+					if ( !scene->bindCube( fallback ) && !scene->bindCube( grayCube, 1 ) )
+						return false;
+				}
 
 				fn->glUniform1i( uniCubeMap, texunit++ );
 			}

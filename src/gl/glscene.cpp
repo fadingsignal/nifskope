@@ -140,6 +140,9 @@ void Scene::updateSettings( QSettings & settings )
 
 	tmp = settings.value( "Settings/Render/General/Bound Sphere Quality", 4 ).toInt();
 	boundSphereQuality = (unsigned char) std::clamp< int >( tmp, 2, 42 );
+
+	if ( renderer )
+		renderer->updateSettings();
 }
 
 void Scene::clear( [[maybe_unused]] bool flushTextures )

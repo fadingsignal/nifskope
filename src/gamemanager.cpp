@@ -295,32 +295,36 @@ static unsigned char * byteArrayAllocFunc( void * bufPtr, size_t nBytes )
 
 bool GameManager::GameResources::get_file( QByteArray & data, const std::string_view & fullPath )
 {
-	if ( !ba2File && !dataPaths.isEmpty() )
-		init_archives();
-	const BA2File::FileInfo *	fd = nullptr;
-	if ( ba2File )
-		fd = ba2File->findFile( fullPath );
-	if ( !fd ) {
-		if ( parent )
-			return parent->get_file( data, fullPath );
-		qWarning() << "File '" << QLatin1String( fullPath.data(), qsizetype(fullPath.length()) ) << "' not found in archives";
-		data.resize( 0 );
-		return false;
-	}
-	try {
-		ba2File->extractFile( &data, &byteArrayAllocFunc, *fd );
-	} catch ( NifSkopeError & e ) {
-		if ( std::string_view(e.what()).starts_with( "BA2File: unexpected change to size of loose file" ) ) {
-			close_archives();
-			return get_file( data, fullPath );
+	for ( bool canRetry = true; ; canRetry = false ) {
+		if ( !ba2File && !dataPaths.isEmpty() )
+			init_archives();
+		const BA2File::FileInfo *	fd = nullptr;
+		if ( ba2File )
+			fd = ba2File->findFile( fullPath );
+		if ( !fd ) {
+			if ( parent )
+				return parent->get_file( data, fullPath );
+			qWarning() << "File '" << QLatin1String( fullPath.data(), qsizetype(fullPath.length()) ) << "' not found in archives";
+			data.resize( 0 );
+			return false;
 		}
-		Message::append( nullptr, QString( "Error loading resource file(s)" ),
-							QString( "'%1': %2" ).arg( QLatin1String(fullPath.data(), qsizetype(fullPath.length())) ).arg( e.what() ),
-							QMessageBox::Critical );
-		data.resize( 0 );
-		return false;
+		try {
+			ba2File->extractFile( &data, &byteArrayAllocFunc, *fd );
+		} catch ( NifSkopeError & e ) {
+			// Loose files are indexed once, a loose file changed or deleted since then needs a new index,
+			// which also lets a deleted file fall through to the next resource path or archive
+			if ( canRetry && fd->archiveType < 0 ) {
+				close_archives();
+				continue;
+			}
+			Message::append( nullptr, QString( "Error loading resource file(s)" ),
+								QString( "'%1': %2" ).arg( QLatin1String(fullPath.data(), qsizetype(fullPath.length())) ).arg( e.what() ),
+								QMessageBox::Critical );
+			data.resize( 0 );
+			return false;
+		}
+		return true;
 	}
-	return true;
 }
 
 struct list_files_scan_function_data {

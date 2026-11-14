@@ -180,6 +180,8 @@ public:
 	static int	pbrCubeMapResolution;
 	static int	pbrImportanceSamples;
 	static int	hdrToneMapLevel;
+	//! Render missing cube maps magenta and show warnings about missing files
+	static bool	highlightMissingFiles;
 
 signals:
 	void sigRefresh();
@@ -214,6 +216,8 @@ public:
 	// returns true if the settings have changed
 	static bool loadSettings( QSettings & settings );
 	static void clearCubeCache();
+	//! Shows a warning about a missing resource file, once per file until the next flush(), if highlightMissingFiles is set
+	static void reportMissingFile( const QString & message, const QString & fileName, const QString & details = QString() );
 	static void set_max_anisotropy();
 	static float get_max_anisotropy();
 

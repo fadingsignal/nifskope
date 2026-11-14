@@ -977,9 +977,10 @@ void BSShaderLightingProperty::setMaterial( const NifModel * nif, const QModelIn
 	if ( bsVersion >= 130 && !isAbstract )
 		const_cast< NifModel * >(nif)->loadFO76Material( index, newMaterial );
 
-	if ( newMaterial && !newMaterial->isValid() )
+	if ( newMaterial && !newMaterial->isValid() ) {
+		TexCache::reportMissingFile( QString( "Material file(s) not found or not readable" ), name );
 		delete newMaterial;
-	else
+	} else
 		material = newMaterial;
 }
 

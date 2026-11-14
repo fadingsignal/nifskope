@@ -1113,6 +1113,16 @@
                </property>
               </widget>
              </item>
+             <item row="6" column="0" colspan="5">
+              <widget class="QCheckBox" name="highlightMissingFiles">
+               <property name="toolTip">
+                <string>Show warnings about cube maps and material files that are set in a NIF or material file but cannot be found or loaded, and render missing cube maps as solid magenta instead of falling back to the default cube map.</string>
+               </property>
+               <property name="text">
+                <string>Highlight Missing Files</string>
+               </property>
+              </widget>
+             </item>
             </layout>
            </widget>
           </item>

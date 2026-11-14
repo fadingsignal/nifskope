@@ -36,11 +36,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "gl/glscene.h"
 #include "model/nifmodel.h"
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QListView>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
+#include <QSet>
 #include <QSettings>
 
 #include <algorithm>
@@ -52,9 +54,27 @@ int TexCache::num_texture_units = 0;
 int TexCache::pbrCubeMapResolution = 512;
 int TexCache::pbrImportanceSamples = 256;
 int TexCache::hdrToneMapLevel = 8;
+bool TexCache::highlightMissingFiles = false;
 
 //! Maximum anisotropy
 static float max_anisotropy = 1.0f;
+
+//! Missing resource files already reported since the last flush
+static QSet< QString >	reportedMissingFiles;
+
+void TexCache::reportMissingFile( const QString & message, const QString & fileName, const QString & details )
+{
+	if ( !highlightMissingFiles || fileName.isEmpty() || fileName.startsWith( QChar('#') ) )
+		return;
+	QString	key = message + QChar('\n') + fileName.toLower();
+	if ( reportedMissingFiles.contains( key ) )
+		return;
+	reportedMissingFiles.insert( key );
+
+	QString	err = ( details.isEmpty() ? fileName : QString( "%1 (%2)" ).arg( fileName, details ) );
+	// this is often called while rendering, show the message box after the current frame
+	QMetaObject::invokeMethod( qApp, [message, err]() { Message::append( message, err ); }, Qt::QueuedConnection );
+}
 
 void TexCache::set_max_anisotropy()
 {
@@ -356,8 +376,16 @@ bool TexCache::bindCube( const QString & fname, const NifModel * nif, bool useSe
 		return false;
 
 	if ( !tx->isLoaded() ) [[unlikely]] {
-		if ( tx->id[0] || !loadTex( *tx, nif ) )
+		if ( tx->id[0] )
 			return false;
+		if ( !loadTex( *tx, nif ) ) {
+			const Tex::ImageInfo *	i = tx->imageInfo;
+			if ( i->filepath.isEmpty() )
+				reportMissingFile( QString( "Cube map(s) not found" ), i->filename );
+			else
+				reportMissingFile( QString( "Cube map(s) could not be loaded" ), i->filename, i->status );
+			return false;
+		}
 	} else {
 		if ( !tx->id[size_t(useSecondTexture)] ) [[unlikely]]
 			return false;
@@ -452,6 +480,8 @@ int TexCache::bind( const QModelIndex & iSource )
 
 void TexCache::flush()
 {
+	reportedMissingFiles.clear();
+
 	for ( size_t i = 0; i <= textureHashMask; i++ ) {
 		Tex &	tx = textures[i];
 		if ( tx.isLoaded() )
@@ -592,6 +622,8 @@ bool TexCache::loadSettings( QSettings & settings )
 	tmp = std::clamp< int >( tmp, 0, 16 );
 	r = r | ( tmp != hdrToneMapLevel );
 	hdrToneMapLevel = tmp;
+
+	highlightMissingFiles = settings.value( "Settings/Render/General/Highlight Missing Files", false ).toBool();
 
 	return r;
 }
