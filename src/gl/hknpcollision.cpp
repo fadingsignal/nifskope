@@ -200,6 +200,7 @@ private:
 	void sphere( const Affine & xf, const Vector3 & c, float r );
 	void capsule( const Affine & xf, const Vector3 & a, const Vector3 & b, float r );
 	void convex( quint32 shape, const Affine & xf, bool hasFaces, float radius );
+	void compressedMesh( quint32 shape, const Affine & xf );
 
 	const Packfile & pf;
 	QVector<Vector3> & lines;
@@ -335,6 +336,83 @@ void ShapeBuilder::convex( quint32 shape, const Affine & xf, bool hasFaces, floa
 	}
 }
 
+void ShapeBuilder::compressedMesh( quint32 shape, const Affine & xf )
+{
+	// hknpCompressedMeshShape::data at 96 -> hknpCompressedMeshShapeData, whose meshTree
+	// (hknpCompressedMeshShapeTree, an hkcdStaticMeshTree) starts at 16:
+	//   domain AABB min/max at 16/32, sections at 64 (96 bytes each), primitives at 80 (4 u8 indices each),
+	//   sharedVerticesIndex (u16) at 96, packedVertices (u32) at 112, sharedVertices (u64) at 128
+	quint32 data;
+	if ( !pf.pointer( shape + 96, data ) )
+		return;
+	const quint32 tree = data + 16;
+	const Vector3 domainMin = pf.getVector3( tree + 16 );
+	const Vector3 domainSize = pf.getVector3( tree + 32 ) - domainMin;
+
+	quint32 sections = 0, primitives = 0, sharedIndices = 0, packedVerts = 0, sharedVerts = 0;
+	const quint32 numSections = pf.array( tree + 64, sections );
+	const quint32 numPrimitives = pf.array( tree + 80, primitives );
+	const quint32 numSharedIndices = pf.array( tree + 96, sharedIndices );
+	const quint32 numPackedVerts = pf.array( tree + 112, packedVerts );
+	const quint32 numSharedVerts = pf.array( tree + 128, sharedVerts );
+
+	for ( quint32 s = 0; s < numSections && s < 65536; s++ ) {
+		const quint32 sec = sections + s * 96;
+		// codecParms: offset xyz at 48, scale xyz at 60
+		const Vector3 offset = pf.getVector3( sec + 48 );
+		const Vector3 scale = pf.getVector3( sec + 60 );
+		const quint32 firstPacked = pf.get<quint32>( sec + 72 );
+		const quint32 sharedRef = pf.get<quint32>( sec + 76 );	// count in the low 8 bits, offset above
+		const quint32 primRef = pf.get<quint32>( sec + 80 );
+		const quint32 numPacked = pf.get<quint8>( sec + 88 );
+
+		// section-local vertex index -> position: packed vertices first (11/11/10 bits, section codec),
+		// then shared vertices (21/21/22 bits across the whole tree's domain)
+		auto vertex = [&]( quint32 i, Vector3 & v ) -> bool {
+			if ( i < numPacked ) {
+				if ( firstPacked + i >= numPackedVerts )
+					return false;
+				const quint32 p = pf.get<quint32>( packedVerts + ( firstPacked + i ) * 4 );
+				v = Vector3( offset[0] + scale[0] * float( p & 0x7FF ),
+							 offset[1] + scale[1] * float( ( p >> 11 ) & 0x7FF ),
+							 offset[2] + scale[2] * float( p >> 22 ) );
+				return true;
+			}
+			const quint32 si = ( sharedRef >> 8 ) + ( i - numPacked );
+			if ( si >= numSharedIndices )
+				return false;
+			const quint32 sv = pf.get<quint16>( sharedIndices + si * 2 );
+			if ( sv >= numSharedVerts )
+				return false;
+			const quint64 p = pf.get<quint64>( sharedVerts + sv * 8 );
+			v = Vector3( domainMin[0] + domainSize[0] * ( float( p & 0x1FFFFF ) / float( 0x1FFFFF ) ),
+						 domainMin[1] + domainSize[1] * ( float( ( p >> 21 ) & 0x1FFFFF ) / float( 0x1FFFFF ) ),
+						 domainMin[2] + domainSize[2] * ( float( p >> 42 ) / float( 0x3FFFFF ) ) );
+			return true;
+		};
+
+		// primitives: a triangle if the last two indices are equal, otherwise a quad; drawn as outlines
+		const quint32 firstPrim = primRef >> 8;
+		const quint32 numPrims = primRef & 0xFF;
+		for ( quint32 p = 0; p < numPrims; p++ ) {
+			if ( firstPrim + p >= numPrimitives )
+				break;
+			const quint32 prim = primitives + ( firstPrim + p ) * 4;
+			const quint32 idx[4] = { pf.get<quint8>( prim ), pf.get<quint8>( prim + 1 ),
+									 pf.get<quint8>( prim + 2 ), pf.get<quint8>( prim + 3 ) };
+			const int n = ( idx[2] == idx[3] ) ? 3 : 4;
+			Vector3 v[4];
+			bool ok = true;
+			for ( int k = 0; k < n && ok; k++ )
+				ok = vertex( idx[k], v[k] );
+			if ( !ok )
+				continue;
+			for ( int k = 0; k < n; k++ )
+				line( xf, v[k], v[( k + 1 ) % n] );
+		}
+	}
+}
+
 void ShapeBuilder::addShape( quint32 shape, const Affine & xf, int depth )
 {
 	if ( depth > 16 )
@@ -359,6 +437,9 @@ void ShapeBuilder::addShape( quint32 shape, const Affine & xf, int depth )
 
 	} else if ( cls == "hknpConvexShape" ) {
 		convex( shape, xf, false, convexRadius );
+
+	} else if ( cls == "hknpCompressedMeshShape" ) {
+		compressedMesh( shape, xf );
 
 	} else if ( cls == "hknpScaledConvexShape" ) {
 		// hknpDecoratorShape::coreShape at 48, hknpScaledConvexShapeBase::scale at 64, translation at 80
