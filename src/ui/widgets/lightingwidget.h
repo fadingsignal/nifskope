@@ -3,10 +3,12 @@
 
 #include <QWidget>
 #include <QAction>
+#include <QHash>
 
 #include <memory>
 
 class GLView;
+class QSlider;
 
 namespace Ui {
 class LightingWidget;
@@ -25,9 +27,18 @@ public:
 
 public slots:
 	void saveSettings();
+	//! Reset all sliders, the light direction and the display toggles to their defaults
+	void resetAll();
+
+protected:
+	bool eventFilter( QObject * watched, QEvent * event ) override;
 
 private:
 	std::unique_ptr<Ui::LightingWidget> ui;
+	GLView * glView;
+	QVector<QAction *> actions;
+	//! Default value of each slider, for double-click reset
+	QHash<QObject *, int> sliderDefaults;
 
 	enum
 	{

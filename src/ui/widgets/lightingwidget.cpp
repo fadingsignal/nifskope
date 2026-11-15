@@ -5,6 +5,7 @@
 #include "nifskope.h"
 
 #include <QAction>
+#include <QEvent>
 #include <QSettings>
 
 
@@ -20,7 +21,7 @@ auto sld = []( QSlider * slider, int min, int max, int val ) {
 };
 
 LightingWidget::LightingWidget( GLView * ogl, QWidget * parent ) : QWidget(parent),
-	ui(new Ui::LightingWidget)
+	ui(new Ui::LightingWidget), glView(ogl)
 {
 	ui->setupUi(this);
 
@@ -43,6 +44,33 @@ LightingWidget::LightingWidget( GLView * ogl, QWidget * parent ) : QWidget(paren
 	connect( ui->btnFrontal, &QToolButton::toggled, ogl, &GLView::setFrontalLight );
 	connect( ogl, &GLView::frontalLightChanged, ui->btnFrontal, &QToolButton::setChecked );
 	connect( ui->btnLoadCubeMap, &QPushButton::clicked, ogl, &GLView::selectPBRCubeMap );
+
+	// Reset a slider to its default by double-clicking it or clicking its icon
+	struct SliderReset
+	{
+		QSlider *	slider;
+		QPushButton *	icon;
+		int	value;
+	};
+	const SliderReset	sliderResets[] = {
+		{ ui->sldDirectional, ui->btnDirectional, DirDefault },
+		{ ui->sldLightColor, ui->btnLightColor, LightColorDefault },
+		{ ui->sldAmbient, ui->btnAmbient, AmbientDefault },
+		{ ui->sldEnvMapRotation, ui->btnEnvMapRotation, EnvMapRotationDefault },
+		{ ui->sldGlowScale, ui->btnGlowScale, GlowScaleDefault },
+		{ ui->sldLightScale, ui->btnLightScale, LightScaleDefault },
+		{ ui->sldToneMapping, ui->btnToneMapping, ToneMappingDefault }
+	};
+	for ( const SliderReset & r : sliderResets ) {
+		sliderDefaults.insert( r.slider, r.value );
+		r.slider->installEventFilter( this );
+		r.slider->setToolTip( tr( "%1 (double-click to reset)" ).arg( r.icon->toolTip() ) );
+		r.icon->setToolTip( tr( "%1 (click to reset)" ).arg( r.icon->toolTip() ) );
+		QSlider *	slider = r.slider;
+		int	value = r.value;
+		connect( r.icon, &QPushButton::clicked, [slider, value]() { slider->setValue( value ); } );
+	}
+	connect( ui->btnReset, &QAbstractButton::clicked, this, &LightingWidget::resetAll );
 
 	// Load default settings
 	QSettings	settings;
@@ -87,6 +115,8 @@ void LightingWidget::setDefaults()
 
 void LightingWidget::setActions( QVector<QAction *> atns )
 {
+	actions = atns;
+
 	ui->btnLighting->setDefaultAction( atns.value(0) );
 	ui->btnTextures->setDefaultAction( atns.value(1) );
 	ui->btnVertexColors->setDefaultAction( atns.value(2) );
@@ -97,6 +127,40 @@ void LightingWidget::setActions( QVector<QAction *> atns )
 	ui->btnSilhouette->setDefaultAction( atns.value(7) );
 
 	connect( ui->btnLighting, &QToolButton::toggled, atns.value(3), &QAction::setEnabled );
+}
+
+bool LightingWidget::eventFilter( QObject * watched, QEvent * event )
+{
+	if ( event->type() == QEvent::MouseButtonDblClick ) {
+		auto	i = sliderDefaults.constFind( watched );
+		if ( i != sliderDefaults.constEnd() ) {
+			static_cast< QSlider * >( watched )->setValue( i.value() );
+			return true;
+		}
+	}
+
+	return QWidget::eventFilter( watched, event );
+}
+
+void LightingWidget::resetAll()
+{
+	for ( auto i = sliderDefaults.cbegin(); i != sliderDefaults.cend(); i++ )
+		static_cast< QSlider * >( i.key() )->setValue( i.value() );
+
+	// Actions from setActions(): lighting, textures, vertex colors, specular, cube map, glow are on by default,
+	// lighting only and silhouette are off. They are connected to triggered(), so toggle with trigger()
+	for ( qsizetype i = 0; i < actions.size(); i++ ) {
+		QAction *	a = actions.at( i );
+		bool	defaultOn = ( i < 6 );
+		if ( a && a->isCheckable() && a->isChecked() != defaultOn )
+			a->trigger();
+	}
+
+	ui->btnFrontal->setChecked( true );
+
+	glView->declination = 0.0f;
+	glView->planarAngle = 0.0f;
+	glView->update();
 }
 
 void LightingWidget::saveSettings()
