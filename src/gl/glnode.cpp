@@ -40,6 +40,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ui/settingsdialog.h"
 #include "glview.h"
 #include "renderer.h"
+#include "gl/hknpcollision.h"
 
 #include "lib/nvtristripwrapper.h"
 
@@ -1248,6 +1249,53 @@ void Node::drawHvkConstraint( const NifModel * nif, const QModelIndex & iConstra
 	}
 }
 
+// collision wireframe colors, indexed by the collision layer
+static const FloatVector4 hvkLayerColors[8] = {
+	{ 0.0f, 1.0f, 0.0f, 1.0f },
+	{ 1.0f, 0.0f, 0.0f, 1.0f },
+	{ 1.0f, 0.0f, 1.0f, 1.0f },
+	{ 1.0f, 1.0f, 1.0f, 1.0f },
+	{ 0.5f, 0.5f, 1.0f, 1.0f },
+	{ 1.0f, 0.8f, 0.0f, 1.0f },
+	{ 1.0f, 0.8f, 0.4f, 1.0f },
+	{ 0.0f, 1.0f, 1.0f, 1.0f }
+};
+
+// Fallout 4 and later: the collision is a Havok packfile in bhkPhysicsSystem, and the collision object
+// names one of its bodies
+void Node::drawHvkNPCollision( const NifModel * nif, const QModelIndex & iObject )
+{
+	QModelIndex iSystem = nif->getBlockIndex( nif->getLink( iObject, "Data" ) );
+	if ( !nif->isNiBlock( iSystem, "bhkPhysicsSystem" ) )
+		return;
+
+	const HknpCollision::Body * body =
+		HknpCollision::getBody( nif->get<QByteArray>( iSystem, "Binary Data" ), nif->get<quint32>( iObject, "Body ID" ) );
+	if ( !body || body->lines.size() < 2 )
+		return;
+
+	// the shapes are in the node's space, in Havok units
+	scene->multModelViewMatrix( worldTrans() * Transform( Vector3(), bhkScale( nif ) ) );
+
+	if ( scene->selecting ) {
+		scene->setGLColor( getColorKeyFromID( nif->getBlockNumber( iObject ) ) );
+		scene->setGLLineWidth( GLView::Settings::lineWidthSelect );
+	} else {
+		glEnable( GL_DEPTH_TEST );
+		glDepthMask( GL_TRUE );
+		glDepthFunc( GL_LEQUAL );
+		if ( scene->currentBlock == iObject || scene->currentBlock == iSystem ) {
+			scene->setGLColor( scene->highlightColor );
+			scene->setGLLineWidth( GLView::Settings::lineWidthHighlight );
+		} else {
+			scene->setGLColor( hvkLayerColors[ body->filterInfo & 7 ] );
+			scene->setGLLineWidth( GLView::Settings::lineWidthWireframe );
+		}
+	}
+
+	scene->drawLines( body->lines.constData(), size_t( body->lines.size() & ~qsizetype( 1 ) ) );
+}
+
 void Node::drawHavok()
 {
 	if ( !scene->isSelModeObject() )
@@ -1380,6 +1428,11 @@ void Node::drawHavok()
 	if ( !iObject.isValid() )
 		return;
 
+	if ( nif->isNiBlock( iObject, "bhkNPCollisionObject" ) ) {
+		drawHvkNPCollision( nif, iObject );
+		return;
+	}
+
 	QModelIndex iBody = nif->getBlockIndex( nif->getLink( iObject, "Body" ) );
 
 	if ( const Transform * t = scene->transformCache.find( bhkBodyTransKey( nif->getBlockNumber( iBody ) ) ); t )
@@ -1396,19 +1449,8 @@ void Node::drawHavok()
 	scene->setGLPointSize( GLView::Settings::vertexPointSize );
 	scene->setGLLineWidth( GLView::Settings::lineWidthWireframe );
 
-	static const FloatVector4 colors[8] = {
-		{ 0.0f, 1.0f, 0.0f, 1.0f },
-		{ 1.0f, 0.0f, 0.0f, 1.0f },
-		{ 1.0f, 0.0f, 1.0f, 1.0f },
-		{ 1.0f, 1.0f, 1.0f, 1.0f },
-		{ 0.5f, 0.5f, 1.0f, 1.0f },
-		{ 1.0f, 0.8f, 0.0f, 1.0f },
-		{ 1.0f, 0.8f, 0.4f, 1.0f },
-		{ 0.0f, 1.0f, 1.0f, 1.0f }
-	};
-
 	int color_index = nif->get<int>( iBody, "Layer" ) & 7;
-	scene->setGLColor( colors[ color_index ] );
+	scene->setGLColor( hvkLayerColors[ color_index ] );
 
 	QModelIndex	iShape = nif->getBlockIndex( nif->getLink( iBody, "Shape" ) );
 	if ( !scene->selecting ) {
@@ -1424,7 +1466,7 @@ void Node::drawHavok()
 
 	Matrix4 *	m = scene->currentModelViewMatrix;
 	scene->pushModelViewMatrix();
-	drawHvkShape( nif, iShape, nullptr, scene, colors[ color_index ], *m );
+	drawHvkShape( nif, iShape, nullptr, scene, hvkLayerColors[ color_index ], *m );
 	scene->currentModelViewMatrix = m;
 
 	if ( scene->hasOption(Scene::ShowAxes) ) {

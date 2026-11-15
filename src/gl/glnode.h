@@ -173,6 +173,7 @@ protected:
 	void drawHvkShape( const NifModel * nif, const QModelIndex & iShape, HvkShapeStackItem * stack,
 						Scene * scene, FloatVector4 origin_color4fv, const Matrix4 & parentTransform );
 	void drawHvkConstraint( const NifModel * nif, const QModelIndex & iConstraint, Scene * scene );
+	void drawHvkNPCollision( const NifModel * nif, const QModelIndex & iObject );
 	void drawFurnitureMarker( const NifModel * nif, const QModelIndex & iPosition );
 
 	QPointer<Node> parent;
