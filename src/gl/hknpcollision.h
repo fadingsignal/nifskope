@@ -4,7 +4,10 @@
 #include "data/niftypes.h"
 
 #include <QByteArray>
+#include <QModelIndex>
 #include <QVector>
+
+class NifModel;
 
 //! @file hknpcollision.h Wireframes for Fallout 4 collision (Havok packfiles in bhkPhysicsSystem)
 
@@ -27,6 +30,12 @@ namespace HknpCollision
 
 	//! Frees all cached wireframes; call when the scene is rebuilt (e.g. a file is loaded or closed)
 	void clearCache();
+
+	/*! Fills the read-only views of a bhkNPCollisionObject (its "Havok Body") and of the bhkPhysicsSystem it
+	 *  links to ("Physics System"). Both are abstract nif.xml fields: shown in the block tree, never saved.
+	 *  Does nothing if the file has no such fields (not Fallout 4) or the data cannot be read.
+	 */
+	void updateViews( NifModel * nif, const QModelIndex & iObject );
 }
 
 #endif

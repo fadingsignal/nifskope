@@ -250,6 +250,8 @@ public:
 
 	//! Finds the flags for an index
 	Qt::ItemFlags flags( const QModelIndex & index ) const override;
+	//! Is the item part of a read-only decoded view (shown in the tree, never edited or saved)?
+	static bool isReadOnlyView( const NifItem * item );
 
 	// end QAbstractItemModel
 

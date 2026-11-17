@@ -238,6 +238,28 @@ void Node::updateImpl( const NifModel * nif, const QModelIndex & index )
 
 	nodeId = nif->getBlockNumber( iBlock );
 
+	// Fallout 4 collision: fill the read-only Havok views in the block tree ("Havok Body" in bhkNPCollisionObject,
+	// "Physics System" in bhkPhysicsSystem) when this node, its collision object or the physics system changes
+	if ( nif->getBSVersion() >= 130 ) {
+		const QModelIndex iObject = nif->getBlockIndex( nif->getLink( iBlock, "Collision Object" ) );
+		const QModelIndex iSystem = iObject.isValid() ? nif->getBlockIndex( nif->getLink( iObject, "Data" ) ) : QModelIndex();
+		if ( iSystem.isValid() && ( index == iBlock || index == iObject || index == iSystem )
+			&& nif->isNiBlock( iObject, "bhkNPCollisionObject" ) && nif->isNiBlock( iSystem, "bhkPhysicsSystem" ) ) {
+			// only refill when the collision object, the Havok data, the body or the system actually changed
+			const void * data = nif->get<QByteArray>( iSystem, "Binary Data" ).constData();
+			const quint32 bodyID = nif->get<quint32>( iObject, "Body ID" );
+			const int object = nif->getBlockNumber( iObject );
+			const int system = nif->getBlockNumber( iSystem );
+			if ( object != hvkViewObject || data != hvkViewData || bodyID != hvkViewBodyID || system != hvkViewSystem ) {
+				hvkViewObject = object;
+				hvkViewData = data;
+				hvkViewBodyID = bodyID;
+				hvkViewSystem = system;
+				HknpCollision::updateViews( const_cast< NifModel * >( nif ), iObject );
+			}
+		}
+	}
+
 	if ( iBlock == index ) {
 		flags.bits = nif->get<int>( iBlock, "Flags" );
 		local = Transform( nif, iBlock );

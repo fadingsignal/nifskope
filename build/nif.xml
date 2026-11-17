@@ -9535,6 +9535,178 @@
 
     <!-- Fallout 4 Physics -->
 
+    <!--
+        Read-only views of the Havok 2014 packfile stored in bhkPhysicsSystem "Binary Data".
+        All of these are abstract: they are filled by NifSkope after loading (src/gl/hknpcollision.cpp),
+        shown in the block tree, and never read from or written to the file.
+    -->
+
+    <enum name="hknpViewShapeType" storage="uint" versions="#FO4#">
+        Shape type of a decoded Fallout 4 Havok shape (names as in the Creation Kit).
+        <option value="0" name="Unknown Shape">Shape type not decoded</option>
+        <option value="1" name="Convex Polytope Shape">hknpConvexPolytopeShape</option>
+        <option value="2" name="Convex Shape">hknpConvexShape</option>
+        <option value="3" name="Capsule Shape">hknpCapsuleShape</option>
+        <option value="4" name="Sphere Shape">hknpSphereShape</option>
+        <option value="5" name="Scaled Convex Shape">hknpScaledConvexShape</option>
+        <option value="6" name="Static Compound Shape">hknpStaticCompoundShape</option>
+        <option value="7" name="Dynamic Compound Shape">hknpDynamicCompoundShape</option>
+        <option value="8" name="Compressed Mesh Shape">hknpCompressedMeshShape</option>
+    </enum>
+
+    <bitflags name="hknpBodyFlags" storage="uint" versions="#FO4#">
+        hknpBody flags. IS_STATIC, IS_DYNAMIC, IS_KEYFRAMED, IS_ACTIVE and the TEMP flags are set by the game at runtime.
+        <option bit="0" name="IS_STATIC" />
+        <option bit="1" name="IS_DYNAMIC" />
+        <option bit="2" name="IS_KEYFRAMED" />
+        <option bit="3" name="IS_ACTIVE" />
+        <option bit="4" name="RAISE_TRIGGER_VOLUME_EVENTS" />
+        <option bit="5" name="RAISE_MANIFOLD_STATUS_EVENTS" />
+        <option bit="6" name="RAISE_MANIFOLD_PROCESSED_EVENTS" />
+        <option bit="7" name="RAISE_CONTACT_IMPULSE_EVENTS" />
+        <option bit="8" name="DONT_COLLIDE" />
+        <option bit="9" name="DONT_BUILD_CONTACT_JACOBIANS" />
+        <option bit="10" name="TEMP_REBUILD_COLLISION_CACHES" />
+        <option bit="11" name="TEMP_DROP_NEW_CVX_CVX_COLLISIONS" />
+        <option bit="12" name="TEMP_BODY_OR_AABB_IS_MODIFIED" />
+        <option bit="13" name="TEMP_REBUILD_CONTACT_CACHES" />
+        <option bit="16" name="USER_FLAG_0" />
+        <option bit="17" name="USER_FLAG_1" />
+        <option bit="18" name="USER_FLAG_2" />
+        <option bit="19" name="USER_FLAG_3" />
+        <option bit="20" name="ENABLE_RESTITUTION" />
+        <option bit="21" name="ENABLE_TRIGGER_MODIFIER" />
+        <option bit="22" name="ENABLE_IMPULSE_CLIPPING" />
+        <option bit="23" name="ENABLE_MASS_CHANGER" />
+        <option bit="24" name="ENABLE_SOFT_CONTACTS" />
+        <option bit="25" name="ENABLE_SURFACE_VELOCITY" />
+        <option bit="26" name="USER_FLAG_4" />
+        <option bit="27" name="USER_FLAG_5" />
+    </bitflags>
+
+    <struct name="hknpViewMassProperties" abstract="true" module="BSHavok" versions="#FO4#">
+        hknpShapeMassProperties of a shape, at density 1: the hull inflated by the convex radius, inertia x 1.5.
+        <field name="Volume" type="float" />
+        <field name="Mass" type="float" />
+        <field name="Center Of Mass" type="Vector3" />
+        <field name="Inertia" type="Vector3">Principal inertia (unit density).</field>
+    </struct>
+
+    <struct name="hknpViewConvexFace" abstract="true" module="BSHavok" versions="#FO4#">
+        <field name="First Index" type="ushort" />
+        <field name="Num Indices" type="byte" />
+    </struct>
+
+    <struct name="hknpViewChildShape" abstract="true" module="BSHavok" versions="#FO4#">
+        A shape inside a compound or scaled shape (nested compounds are not expanded further).
+        <field name="Shape Type" type="hknpViewShapeType" />
+        <field name="UserData" type="Fallout4HavokMaterial">Material ID: BSCRC32 of the lowercase Material Name.</field>
+        <field name="Convex Radius" type="float" />
+        <field name="Vert Count" type="uint" cond="(Shape Type #EQ# 1) #OR# (Shape Type #EQ# 2)" />
+        <field name="Face Count" type="uint" cond="Shape Type #EQ# 1" />
+        <field name="Plane Count" type="uint" cond="Shape Type #EQ# 1" />
+        <field name="Point A" type="Vector3" cond="Shape Type #EQ# 3" />
+        <field name="Point B" type="Vector3" cond="Shape Type #EQ# 3" />
+        <field name="Center" type="Vector3" cond="Shape Type #EQ# 4" />
+        <field name="Vertices" type="Vector3" length="Vert Count" cond="(Shape Type #EQ# 1) #OR# (Shape Type #EQ# 2)" />
+        <field name="Planes" type="Vector4" length="Plane Count" cond="Shape Type #EQ# 1">Plane normal and distance, on the hull before the convex radius is added.</field>
+        <field name="Faces" type="hknpViewConvexFace" length="Face Count" cond="Shape Type #EQ# 1" />
+        <field name="Has Mass Properties" type="bool" />
+        <field name="Mass Properties" type="hknpViewMassProperties" cond="Has Mass Properties" />
+    </struct>
+
+    <struct name="hknpViewShapeInstance" abstract="true" module="BSHavok" versions="#FO4#">
+        One piece of a compound shape.
+        <field name="Instance ShapeTag" type="ushort" />
+        <field name="Instance Scale" type="Vector3" />
+        <field name="Instance Translate" type="Vector3" />
+        <field name="Instance Rotate" type="Matrix33" />
+        <field name="Shape" type="hknpViewChildShape" />
+    </struct>
+
+    <struct name="hknpViewShape" abstract="true" module="BSHavok" versions="#FO4#">
+        A body's shape.
+        <field name="Shape Type" type="hknpViewShapeType" />
+        <field name="UserData" type="Fallout4HavokMaterial">Material ID: BSCRC32 of the lowercase Material Name.</field>
+        <field name="Convex Radius" type="float" />
+        <field name="Vert Count" type="uint" cond="(Shape Type #EQ# 1) #OR# (Shape Type #EQ# 2)" />
+        <field name="Face Count" type="uint" cond="Shape Type #EQ# 1" />
+        <field name="Plane Count" type="uint" cond="Shape Type #EQ# 1" />
+        <field name="Point A" type="Vector3" cond="Shape Type #EQ# 3" />
+        <field name="Point B" type="Vector3" cond="Shape Type #EQ# 3" />
+        <field name="Center" type="Vector3" cond="Shape Type #EQ# 4" />
+        <field name="Scale" type="Vector3" cond="Shape Type #EQ# 5" />
+        <field name="Translation" type="Vector3" cond="Shape Type #EQ# 5" />
+        <field name="Core Shape" type="hknpViewChildShape" cond="Shape Type #EQ# 5" />
+        <field name="Num Instances" type="uint" cond="(Shape Type #EQ# 6) #OR# (Shape Type #EQ# 7)" />
+        <field name="Instances" type="hknpViewShapeInstance" length="Num Instances" cond="(Shape Type #EQ# 6) #OR# (Shape Type #EQ# 7)" />
+        <field name="Num Sections" type="uint" cond="Shape Type #EQ# 8" />
+        <field name="Num Primitives" type="uint" cond="Shape Type #EQ# 8">Triangles and quads.</field>
+        <field name="Bounds Min" type="Vector3" cond="Shape Type #EQ# 8" />
+        <field name="Bounds Max" type="Vector3" cond="Shape Type #EQ# 8" />
+        <field name="Vertices" type="Vector3" length="Vert Count" cond="(Shape Type #EQ# 1) #OR# (Shape Type #EQ# 2)" />
+        <field name="Planes" type="Vector4" length="Plane Count" cond="Shape Type #EQ# 1">Plane normal and distance, on the hull before the convex radius is added.</field>
+        <field name="Faces" type="hknpViewConvexFace" length="Face Count" cond="Shape Type #EQ# 1" />
+        <field name="Has Mass Properties" type="bool" />
+        <field name="Mass Properties" type="hknpViewMassProperties" cond="Has Mass Properties" />
+    </struct>
+
+    <struct name="hknpViewMaterial" abstract="true" module="BSHavok" versions="#FO4#">
+        <field name="Dynamic Friction" type="float" />
+        <field name="Static Friction" type="float" />
+        <field name="Restitution" type="float" />
+        <field name="Friction Combine Policy" type="byte" />
+        <field name="Restitution Combine Policy" type="byte" />
+        <field name="Welding Tolerance" type="float" />
+        <field name="Max Contact Impulse" type="float" />
+        <field name="Trigger Type" type="byte" />
+    </struct>
+
+    <struct name="hknpViewMotionProperties" abstract="true" module="BSHavok" versions="#FO4#">
+        <field name="Gravity Factor" type="float" />
+        <field name="Time Factor" type="float" />
+        <field name="Max Linear Speed" type="float" />
+        <field name="Max Angular Speed" type="float" />
+        <field name="Linear Damping" type="float" />
+        <field name="Angular Damping" type="float" />
+    </struct>
+
+    <struct name="hknpViewMotion" abstract="true" module="BSHavok" versions="#FO4#">
+        <field name="Mass" type="float">1 / inverse mass (0 if the inverse mass is 0).</field>
+        <field name="Mass Factor" type="float">Mass / volume of the shape.</field>
+        <field name="Inverse Inertia" type="Vector3" />
+        <field name="Center Of Mass" type="Vector3" />
+        <field name="Orientation" type="hkQuaternion">Principal axes of the inertia.</field>
+        <field name="Motion Properties ID" type="ushort" />
+        <field name="Enable Deactivation" type="bool" />
+    </struct>
+
+    <struct name="hknpViewBody" abstract="true" module="BSHavok" versions="#FO4#">
+        A body of the physics system (hknpBodyCinfo).
+        <field name="Body ID" type="uint">Index into the physics system's bodies.</field>
+        <field name="Collision Filter" type="uint">Collision filter info; the layer is in the low 7 bits (the group is assigned at runtime).</field>
+        <field name="Layer" type="Fallout4Layer" />
+        <field name="Flags" type="hknpBodyFlags" />
+        <field name="Motion ID" type="uint">0x7FFFFFFF = no motion (static).</field>
+        <field name="Material ID" type="ushort" />
+        <field name="Quality ID" type="byte" />
+        <field name="Mass" type="float">Mass of the body's motion (0 for static bodies).</field>
+        <field name="Shape" type="hknpViewShape" />
+    </struct>
+
+    <struct name="hknpViewPhysicsSystem" abstract="true" module="BSHavok" versions="#FO4#">
+        hknpPhysicsSystemData.
+        <field name="Num Bodies" type="uint" />
+        <field name="Bodies" type="hknpViewBody" length="Num Bodies" />
+        <field name="Num Materials" type="uint" />
+        <field name="Materials" type="hknpViewMaterial" length="Num Materials" />
+        <field name="Num Motion Properties" type="uint" />
+        <field name="Motion Properties" type="hknpViewMotionProperties" length="Num Motion Properties" />
+        <field name="Num Motions" type="uint" />
+        <field name="Motions" type="hknpViewMotion" length="Num Motions" />
+        <field name="Num Constraints" type="uint" />
+    </struct>
+
     <niobject name="bhkSystem" abstract="true" inherit="NiObject" module="BSHavok" versions="#FO4_AND_LATER#">
         Fallout 4 Physics System
     </niobject>
@@ -9546,11 +9718,13 @@
         </field>
         <field name="Data" type="Ref" template="bhkSystem" />
         <field name="Body ID" type="uint" />
+        <field name="Havok Body" type="hknpViewBody" abstract="true" vercond="#BS_FO4#">Read-only view of this object's body in the physics system (not stored in the file).</field>
     </niobject>
 
     <niobject name="bhkPhysicsSystem" inherit="bhkSystem" module="BSHavok" versions="#FO4_AND_LATER#">
         Fallout 4 Collision System
         <field name="Binary Data" type="ByteArray" />
+        <field name="Physics System" type="hknpViewPhysicsSystem" abstract="true" vercond="#BS_FO4#">Read-only view of the Havok data in Binary Data (not stored in the file).</field>
     </niobject>
 
     <niobject name="bhkRagdollSystem" inherit="bhkSystem" module="BSHavok" versions="#FO4_AND_LATER#">

@@ -1,7 +1,10 @@
 #include "hknpcollision.h"
 
+#include "model/nifmodel.h"
+
 #include <QDebug>
 #include <QHash>
+#include <QPair>
 
 #include <cmath>
 #include <cstring>
@@ -57,6 +60,11 @@ public:
 		return quint32( std::max< qint32 >( get<qint32>( offset + 8 ), 0 ) );
 	}
 	QByteArray className( quint32 offset ) const { return classes.value( offset ); }
+	//! How many elements of @p stride bytes starting at @p start fit in the data (limits counts read from the file)
+	quint32 available( quint32 start, quint32 stride ) const
+	{
+		return ( start < size && stride ) ? ( size - start ) / stride : 0;
+	}
 	quint32 findObject( const char * name ) const
 	{
 		for ( auto i = classes.constBegin(); i != classes.constEnd(); i++ ) {
@@ -553,6 +561,355 @@ void loadSystem( System & sys )
 	}
 }
 
+/*
+ * Read-only views for the block tree: fills the abstract nif.xml structs hknpViewPhysicsSystem and hknpViewBody
+ * (see build/nif.xml) from the packfile. Values are in Havok units, as stored.
+ */
+class ViewFiller
+{
+public:
+	ViewFiller( NifModel * n, const Packfile & p ) : nif( n ), pf( p ) {}
+
+	void system( NifItem * item, quint32 root );
+	void body( NifItem * item, quint32 root, quint32 bodyID );
+
+private:
+	static constexpr int maxDepth = 8;
+	static constexpr quint32 maxArray = 65536;
+
+	NifItem * child( NifItem * parent, const char * name ) const
+	{
+		return parent ? nif->getItem( parent, QLatin1StringView( name ) ) : nullptr;
+	}
+	template <typename T> void put( NifItem * parent, const char * name, const T & v ) const
+	{
+		NifItem::set<T>( child( parent, name ), v );
+	}
+	// set an array's count, re-evaluate the conditions of the struct and resize the array;
+	// skips arrays that the struct does not have, or that are switched off by their condition
+	// (the model does not return those, and asking for them by name reports an error)
+	void resize( NifItem * parent, const char * count, const char * array, quint32 n ) const
+	{
+		if ( !parent || !child( parent, array ) )
+			return;
+		put<quint32>( parent, count, n );
+		for ( auto c : parent->children() )
+			c->invalidateCondition();
+		nif->updateArraySize( parent, array );
+	}
+	static float half( quint16 h )
+	{
+		const quint32 bits = quint32( h ) << 16;
+		float f;
+		std::memcpy( &f, &bits, 4 );
+		return f;
+	}
+	// hkPackedVector3: three int16 values and a scale (the high half of a float) in the fourth
+	Vector3 packedVector( quint32 offset ) const
+	{
+		const quint32 bits = quint32( pf.get<quint16>( offset + 6 ) ) << 16;
+		float scale;
+		std::memcpy( &scale, &bits, 4 );
+		scale *= 65536.0f;
+		return Vector3( pf.get<qint16>( offset ) * scale, pf.get<qint16>( offset + 2 ) * scale,
+						pf.get<qint16>( offset + 4 ) * scale );
+	}
+
+	/*! Number of array elements to show: the count from the file, limited to what the data holds and to the
+	 *  remaining row budget (each element costs @p rowsEach rows). A malformed file can repeat a large shape in
+	 *  many bodies or instances; the budget keeps the whole view bounded. Real files stay far below it.
+	 */
+	quint32 take( quint32 n, quint32 start, quint32 stride, int rowsEach )
+	{
+		n = std::min( { n, maxArray, pf.available( start, stride ) } );
+		const qsizetype affordable = std::max< qsizetype >( rowBudget, 0 ) / rowsEach;
+		n = quint32( std::min< qsizetype >( n, affordable ) );
+		rowBudget -= qsizetype( n ) * rowsEach;
+		return n;
+	}
+
+	quint32 shapeType( quint32 shape ) const;
+	void shape( NifItem * item, quint32 shape, int depth );
+	void massProperties( NifItem * item, quint32 shape ) const;
+
+	NifModel * nif;
+	const Packfile & pf;
+	qsizetype rowBudget = 500000;	// rows left for this fill
+};
+
+quint32 ViewFiller::shapeType( quint32 shape ) const
+{
+	// values of the nif.xml enum hknpViewShapeType
+	static const char * const names[] = {
+		nullptr, "hknpConvexPolytopeShape", "hknpConvexShape", "hknpCapsuleShape", "hknpSphereShape",
+		"hknpScaledConvexShape", "hknpStaticCompoundShape", "hknpDynamicCompoundShape", "hknpCompressedMeshShape"
+	};
+	const QByteArray cls = pf.className( shape );
+	for ( quint32 i = 1; i < sizeof( names ) / sizeof( names[0] ); i++ ) {
+		if ( cls == names[i] )
+			return i;
+	}
+	return 0;
+}
+
+void ViewFiller::massProperties( NifItem * item, quint32 shape ) const
+{
+	// hknpShape::properties at 32 -> hkRefCountedProperties: entries (object*, key u16) at 0, 16 bytes each;
+	// key 0xF100 -> hknpShapeMassProperties, hkCompressedMassProperties at 16:
+	// centerOfMass (packed) 0, inertia (packed) 8, majorAxisSpace 16, mass 24, volume 28
+	quint32 props = 0, entries = 0, massProps = 0;
+	bool found = false;
+	if ( pf.pointer( shape + 32, props ) ) {
+		const quint32 n = pf.array( props, entries );
+		for ( quint32 i = 0; i < n && i < 64 && !found; i++ ) {
+			if ( pf.get<quint16>( entries + i * 16 + 8 ) == 0xF100 && pf.pointer( entries + i * 16, massProps ) )
+				found = true;
+		}
+	}
+	put<bool>( item, "Has Mass Properties", found );
+	for ( auto c : item->children() )
+		c->invalidateCondition();
+	if ( !found )
+		return;
+	NifItem * m = child( item, "Mass Properties" );
+	const quint32 c = massProps + 16;
+	put<float>( m, "Volume", pf.get<float>( c + 28 ) );
+	put<float>( m, "Mass", pf.get<float>( c + 24 ) );
+	put<Vector3>( m, "Center Of Mass", packedVector( c ) );
+	put<Vector3>( m, "Inertia", packedVector( c + 8 ) );
+}
+
+void ViewFiller::shape( NifItem * item, quint32 shape, int depth )
+{
+	if ( !item )
+		return;
+	rowBudget -= 25;	// the shape's own fields
+	const quint32 type = ( depth <= maxDepth ? shapeType( shape ) : 0 );
+	put<quint32>( item, "Shape Type", type );
+	put<quint32>( item, "UserData", quint32( pf.get<quint64>( shape + 24 ) ) );
+	put<float>( item, "Convex Radius", pf.get<float>( shape + 20 ) );
+	for ( auto c : item->children() )
+		c->invalidateCondition();
+
+	// zero the counts, so arrays that are hidden for this shape type stay empty if they are shown later
+	put<quint32>( item, "Vert Count", 0 );
+	put<quint32>( item, "Plane Count", 0 );
+	put<quint32>( item, "Face Count", 0 );
+	put<quint32>( item, "Num Instances", 0 );
+
+	switch ( type ) {
+	case 1:		// convex polytope
+	case 2: {	// convex: vertices at 48 (hkRelArray of hkVector4)
+		quint32 start = 0;
+		const quint32 nvRaw = pf.relArray( shape + 48, start );	// read the count first: it also sets start
+		const quint32 nv = take( nvRaw, start, 16, 1 );
+		resize( item, "Vert Count", "Vertices", nv );
+		if ( NifItem * a = child( item, "Vertices" ) ) {
+			for ( quint32 i = 0; i < nv && int( i ) < a->childCount(); i++ )
+				NifItem::set<Vector3>( a->child( int( i ) ), pf.getVector3( start + i * 16 ) );
+		}
+		if ( type == 1 ) {
+			// planes at 64 (hkVector4), faces at 68 (firstIndex u16, numIndices u8, minHalfAngle u8)
+			const quint32 npRaw = pf.relArray( shape + 64, start );	// read the count first: it also sets start
+			const quint32 np = take( npRaw, start, 16, 1 );
+			resize( item, "Plane Count", "Planes", np );
+			if ( NifItem * a = child( item, "Planes" ) ) {
+				for ( quint32 i = 0; i < np && int( i ) < a->childCount(); i++ ) {
+					const quint32 o = start + i * 16;
+					NifItem::set<Vector4>( a->child( int( i ) ),
+										   Vector4( pf.get<float>( o ), pf.get<float>( o + 4 ),
+													pf.get<float>( o + 8 ), pf.get<float>( o + 12 ) ) );
+				}
+			}
+			const quint32 nfRaw = pf.relArray( shape + 68, start );	// read the count first: it also sets start
+			const quint32 nf = take( nfRaw, start, 4, 3 );
+			resize( item, "Face Count", "Faces", nf );
+			if ( NifItem * a = child( item, "Faces" ) ) {
+				for ( quint32 i = 0; i < nf && int( i ) < a->childCount(); i++ ) {
+					NifItem * f = a->child( int( i ) );
+					put<quint16>( f, "First Index", pf.get<quint16>( start + i * 4 ) );
+					put<quint8>( f, "Num Indices", pf.get<quint8>( start + i * 4 + 2 ) );
+				}
+			}
+		}
+		break;
+	}
+	case 3:		// capsule: a at 80, b at 96, radius = convex radius
+		put<Vector3>( item, "Point A", pf.getVector3( shape + 80 ) );
+		put<Vector3>( item, "Point B", pf.getVector3( shape + 96 ) );
+		break;
+	case 4: {	// sphere: centre = vertices[0], radius = convex radius
+		quint32 start = 0;
+		if ( pf.relArray( shape + 48, start ) )
+			put<Vector3>( item, "Center", pf.getVector3( start ) );
+		break;
+	}
+	case 5: {	// scaled convex: core shape at 48, scale at 64, translation at 80
+		put<Vector3>( item, "Scale", pf.getVector3( shape + 64 ) );
+		put<Vector3>( item, "Translation", pf.getVector3( shape + 80 ) );
+		quint32 core;
+		if ( NifItem * c = child( item, "Core Shape" ); c && pf.pointer( shape + 48, core ) )
+			this->shape( c, core, depth + 1 );
+		break;
+	}
+	case 6:
+	case 7: {	// compound: instances (128 bytes each) at 96: rotation columns 0/16/32, translation 48,
+				// scale 64, shape 80, shapeTag 88
+		if ( !child( item, "Instances" ) )
+			break;
+		quint32 start = 0;
+		// each instance creates its fields and a nested child shape struct (~30 rows)
+		const quint32 nRaw = pf.array( shape + 96, start );	// read the count first: it also sets start
+		const quint32 n = take( nRaw, start, 128, 30 );
+		resize( item, "Num Instances", "Instances", n );
+		NifItem * a = child( item, "Instances" );
+		for ( quint32 i = 0; a && i < n && int( i ) < a->childCount(); i++ ) {
+			NifItem * inst = a->child( int( i ) );
+			const quint32 o = start + i * 128;
+			const Vector3 cx = pf.getVector3( o ), cy = pf.getVector3( o + 16 ), cz = pf.getVector3( o + 32 );
+			const float rot[9] = { cx[0], cy[0], cz[0], cx[1], cy[1], cz[1], cx[2], cy[2], cz[2] };
+			put<quint16>( inst, "Instance ShapeTag", pf.get<quint16>( o + 88 ) );
+			put<Vector3>( inst, "Instance Scale", pf.getVector3( o + 64 ) );
+			put<Vector3>( inst, "Instance Translate", pf.getVector3( o + 48 ) );
+			put<Matrix>( inst, "Instance Rotate", Matrix( rot ) );
+			quint32 childShape;
+			if ( pf.pointer( o + 80, childShape ) )
+				this->shape( child( inst, "Shape" ), childShape, depth + 1 );
+		}
+		break;
+	}
+	case 8: {	// compressed mesh: data at 96, mesh tree at data + 16 (domain 16/32, sections 64, primitives 80)
+		quint32 data;
+		if ( child( item, "Num Sections" ) && pf.pointer( shape + 96, data ) ) {
+			quint32 unused;
+			put<quint32>( item, "Num Sections", pf.array( data + 16 + 64, unused ) );
+			put<quint32>( item, "Num Primitives", pf.array( data + 16 + 80, unused ) );
+			put<Vector3>( item, "Bounds Min", pf.getVector3( data + 16 + 16 ) );
+			put<Vector3>( item, "Bounds Max", pf.getVector3( data + 16 + 32 ) );
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	massProperties( item, shape );
+}
+
+void ViewFiller::body( NifItem * item, quint32 root, quint32 bodyID )
+{
+	if ( !item )
+		return;
+	rowBudget -= 12;	// the body's own fields
+	// hknpBodyCinfo (96 bytes): shape* 0, motionId 12, qualityId 16 (u8), materialId 18 (u16),
+	// collisionFilterInfo 20, flags 24
+	quint32 bodies = 0, motions = 0;
+	// read each count first (it also sets the start offset), then limit it to the data
+	const quint32 nBodiesRaw = pf.array( root + 64, bodies );
+	const quint32 nBodies = std::min( nBodiesRaw, pf.available( bodies, 96 ) );
+	const quint32 nMotionsRaw = pf.array( root + 48, motions );
+	const quint32 nMotions = std::min( nMotionsRaw, pf.available( motions, 112 ) );
+	if ( bodyID >= nBodies )
+		return;
+	const quint32 b = bodies + bodyID * 96;
+	const quint32 filter = pf.get<quint32>( b + 20 );
+	const quint32 motionID = pf.get<quint32>( b + 12 );
+	put<quint32>( item, "Body ID", bodyID );
+	put<quint32>( item, "Collision Filter", filter );
+	put<quint32>( item, "Layer", filter & 0x7F );
+	put<quint32>( item, "Flags", pf.get<quint32>( b + 24 ) );
+	put<quint32>( item, "Motion ID", motionID );
+	put<quint32>( item, "Material ID", pf.get<quint16>( b + 18 ) );
+	put<quint32>( item, "Quality ID", pf.get<quint8>( b + 16 ) );
+	float mass = 0.0f;
+	if ( motionID < nMotions ) {
+		const float invMass = pf.get<float>( motions + motionID * 112 + 4 );
+		if ( invMass > 0.0f )
+			mass = 1.0f / invMass;
+	}
+	put<float>( item, "Mass", mass );
+	quint32 s;
+	if ( pf.pointer( b, s ) )
+		shape( child( item, "Shape" ), s, 0 );
+}
+
+void ViewFiller::system( NifItem * item, quint32 root )
+{
+	if ( !item )
+		return;
+	quint32 start = 0;
+
+	// each body creates a body struct with a nested shape struct (~40 rows) as soon as the array is sized
+	const quint32 nBodiesRaw = pf.array( root + 64, start );	// read the count first: it also sets start
+	const quint32 nBodies = take( nBodiesRaw, start, 96, 40 );
+	resize( item, "Num Bodies", "Bodies", nBodies );
+	if ( NifItem * a = child( item, "Bodies" ) ) {
+		for ( quint32 i = 0; i < nBodies && int( i ) < a->childCount(); i++ )
+			body( a->child( int( i ) ), root, i );
+	}
+
+	// hknpMaterial (80 bytes): triggerType 16, dynamicFriction 18 (half), staticFriction 20, restitution 22,
+	// friction/restitution combine policy 24/25, weldingTolerance 26 (half), maxContactImpulse 28
+	const quint32 nMaterialsRaw = pf.array( root + 16, start );	// read the count first: it also sets start
+	const quint32 nMaterials = take( nMaterialsRaw, start, 80, 9 );
+	resize( item, "Num Materials", "Materials", nMaterials );
+	if ( NifItem * a = child( item, "Materials" ) ) {
+		for ( quint32 i = 0; i < nMaterials && int( i ) < a->childCount(); i++ ) {
+			NifItem * m = a->child( int( i ) );
+			const quint32 o = start + i * 80;
+			put<float>( m, "Dynamic Friction", half( pf.get<quint16>( o + 18 ) ) );
+			put<float>( m, "Static Friction", half( pf.get<quint16>( o + 20 ) ) );
+			put<float>( m, "Restitution", half( pf.get<quint16>( o + 22 ) ) );
+			put<quint32>( m, "Friction Combine Policy", pf.get<quint8>( o + 24 ) );
+			put<quint32>( m, "Restitution Combine Policy", pf.get<quint8>( o + 25 ) );
+			put<float>( m, "Welding Tolerance", half( pf.get<quint16>( o + 26 ) ) );
+			put<float>( m, "Max Contact Impulse", pf.get<float>( o + 28 ) );
+			put<quint32>( m, "Trigger Type", pf.get<quint8>( o + 16 ) );
+		}
+	}
+
+	// hknpMotionProperties (64 bytes): gravityFactor 8, timeFactor 12, maxLinearSpeed 16, maxAngularSpeed 20,
+	// linearDamping 24, angularDamping 28
+	const quint32 nPropsRaw = pf.array( root + 32, start );	// read the count first: it also sets start
+	const quint32 nProps = take( nPropsRaw, start, 64, 7 );
+	resize( item, "Num Motion Properties", "Motion Properties", nProps );
+	if ( NifItem * a = child( item, "Motion Properties" ) ) {
+		for ( quint32 i = 0; i < nProps && int( i ) < a->childCount(); i++ ) {
+			NifItem * m = a->child( int( i ) );
+			const quint32 o = start + i * 64;
+			put<float>( m, "Gravity Factor", pf.get<float>( o + 8 ) );
+			put<float>( m, "Time Factor", pf.get<float>( o + 12 ) );
+			put<float>( m, "Max Linear Speed", pf.get<float>( o + 16 ) );
+			put<float>( m, "Max Angular Speed", pf.get<float>( o + 20 ) );
+			put<float>( m, "Linear Damping", pf.get<float>( o + 24 ) );
+			put<float>( m, "Angular Damping", pf.get<float>( o + 28 ) );
+		}
+	}
+
+	// hknpMotionCinfo (112 bytes): motionPropertiesId 0 (u16), enableDeactivation 2, inverseMass 4, massFactor 8,
+	// inverseInertiaLocal 32, centerOfMassWorld 48, orientation 64 (x, y, z, w)
+	const quint32 nMotionsRaw = pf.array( root + 48, start );	// read the count first: it also sets start
+	const quint32 nMotions = take( nMotionsRaw, start, 112, 8 );
+	resize( item, "Num Motions", "Motions", nMotions );
+	if ( NifItem * a = child( item, "Motions" ) ) {
+		for ( quint32 i = 0; i < nMotions && int( i ) < a->childCount(); i++ ) {
+			NifItem * m = a->child( int( i ) );
+			const quint32 o = start + i * 112;
+			const float invMass = pf.get<float>( o + 4 );
+			put<float>( m, "Mass", invMass > 0.0f ? 1.0f / invMass : 0.0f );
+			put<float>( m, "Mass Factor", pf.get<float>( o + 8 ) );
+			put<Vector3>( m, "Inverse Inertia", pf.getVector3( o + 32 ) );
+			put<Vector3>( m, "Center Of Mass", pf.getVector3( o + 48 ) );
+			put<Quat>( m, "Orientation", Quat( pf.get<float>( o + 76 ), pf.get<float>( o + 64 ),
+											   pf.get<float>( o + 68 ), pf.get<float>( o + 72 ) ) );
+			put<quint32>( m, "Motion Properties ID", pf.get<quint16>( o ) );
+			put<bool>( m, "Enable Deactivation", pf.get<quint8>( o + 2 ) != 0 );
+		}
+	}
+
+	quint32 unused;
+	put<quint32>( item, "Num Constraints", pf.array( root + 80, unused ) );
+}
+
 // Wireframes per bhkPhysicsSystem, keyed by the address of its "Binary Data". Each entry keeps a copy of
 // that QByteArray, so the address stays unique while cached. Cleared when the scene is rebuilt.
 QHash<const char *, System> & cache()
@@ -561,11 +918,55 @@ QHash<const char *, System> & cache()
 	return c;
 }
 
+// The "Physics System" view each bhkPhysicsSystem block was last filled from (model, block number -> a copy of
+// its Binary Data). Several collision objects can share one system; it is filled once, not once per object.
+// Holding the copy keeps the data's address unique while recorded. Cleared with the scene.
+QHash<QPair<const NifModel *, int>, QByteArray> & filledSystems()
+{
+	static QHash<QPair<const NifModel *, int>, QByteArray> s;
+	return s;
+}
+
 }	// namespace
 
 void HknpCollision::clearCache()
 {
 	cache().clear();
+	filledSystems().clear();
+}
+
+void HknpCollision::updateViews( NifModel * nif, const QModelIndex & iObject )
+{
+	if ( !nif || !nif->isNiBlock( iObject, "bhkNPCollisionObject" ) )
+		return;
+	// "Havok Body", not "Body": the Skyrim collision code looks up a "Body" link on every collision object
+	NifItem * bodyView = nif->getItem( iObject, "Havok Body" );
+	const QModelIndex iSystem = nif->getBlockIndex( nif->getLink( iObject, "Data" ) );
+	if ( !bodyView || !nif->isNiBlock( iSystem, "bhkPhysicsSystem" ) )
+		return;
+	NifItem * systemView = nif->getItem( iSystem, "Physics System" );
+
+	// the packfile reader points into this buffer, so it must stay alive while filling
+	const QByteArray data = nif->get<QByteArray>( iSystem, "Binary Data" );
+	Packfile pf;
+	if ( !pf.parse( data ) )
+		return;
+	const quint32 root = pf.findObject( "hknpPhysicsSystemData" );
+	if ( root == quint32( -1 ) )
+		return;
+
+	// Filling the views is not an edit: in the Processing state, resizing their arrays does not emit dataChanged,
+	// so the file is not marked as modified (no asterisk in the title, no "save changes?" prompt).
+	nif->setState( BaseModel::Processing );
+	ViewFiller fill( nif, pf );
+	fill.body( bodyView, root, nif->get<quint32>( iObject, "Body ID" ) );
+	// the shared system view: only when it has not been filled from this exact data yet
+	const QPair<const NifModel *, int> key( nif, nif->getBlockNumber( iSystem ) );
+	if ( systemView && filledSystems().value( key ).constData() != data.constData() ) {
+		ViewFiller( nif, pf ).system( systemView, root );
+		filledSystems().insert( key, data );
+	}
+	nif->restoreState();
 }
 
 const HknpCollision::Body * HknpCollision::getBody( const QByteArray & data, quint32 bodyID )
