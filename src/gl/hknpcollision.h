@@ -7,9 +7,10 @@
 #include <QModelIndex>
 #include <QVector>
 
+class HkPackfile;
 class NifModel;
 
-//! @file hknpcollision.h Wireframes for Fallout 4 collision (Havok packfiles in bhkPhysicsSystem)
+//! @file hknpcollision.h Fallout 4 collision (Havok packfiles in bhkPhysicsSystem): wireframes and block tree views
 
 namespace HknpCollision
 {
@@ -28,14 +29,27 @@ namespace HknpCollision
 	 */
 	const Body * getBody( const QByteArray & data, quint32 bodyID );
 
-	//! Frees all cached wireframes; call when the scene is rebuilt (e.g. a file is loaded or closed)
+	//! Frees all cached data; call when the scene is rebuilt (e.g. a file is loaded or closed)
 	void clearCache();
 
 	/*! Fills the read-only views of a bhkNPCollisionObject (its "Havok Body") and of the bhkPhysicsSystem it
 	 *  links to ("Physics System"). Both are abstract nif.xml fields: shown in the block tree, never saved.
-	 *  Does nothing if the file has no such fields (not Fallout 4) or the data cannot be read.
+	 *  If the data cannot be decoded, the views are emptied. Does nothing for files without these fields.
+	 *  Implemented in hknpcollisionview.cpp.
 	 */
 	void updateViews( NifModel * nif, const QModelIndex & iObject );
+
+	// Shared by hknpcollision.cpp and hknpcollisionview.cpp
+	namespace Detail
+	{
+		/*! The parsed packfile of a bhkPhysicsSystem's Binary Data (parsed once, cached until clearCache()), and the
+		 *  offset of its hknpPhysicsSystemData in @p root. nullptr if it cannot be read. The pointer is valid until
+		 *  the next call that adds to the cache (getBody or parsedSystem with new data) or clearCache().
+		 */
+		const HkPackfile * parsedSystem( const QByteArray & data, quint32 & root );
+		//! Forgets which physics system views have been filled (hknpcollisionview.cpp); called by clearCache()
+		void clearViewRecords();
+	}
 }
 
 #endif

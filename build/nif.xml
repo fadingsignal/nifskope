@@ -9597,6 +9597,11 @@
         <field name="Num Indices" type="byte" />
     </struct>
 
+    <!--
+        hknpViewChildShape repeats most fields of hknpViewShape because a nif.xml struct cannot contain itself:
+        a compound's pieces get this struct, which has no Instances/Core Shape, so the view nests one level only.
+        Keep the shared fields of the two structs in sync.
+    -->
     <struct name="hknpViewChildShape" abstract="true" module="BSHavok" versions="#FO4#">
         A shape inside a compound or scaled shape (nested compounds are not expanded further).
         <field name="Shape Type" type="hknpViewShapeType" />

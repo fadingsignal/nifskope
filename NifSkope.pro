@@ -177,6 +177,8 @@ HEADERS += \
 	src/gl/gltex.h \
 	src/gl/gltools.h \
 	src/gl/hknpcollision.h \
+	src/gl/hknplayout.h \
+	src/gl/hkpackfile.h \
 	src/gl/icontrollable.h \
 	src/gl/renderer.h \
 	src/io/material.h \
@@ -264,6 +266,8 @@ SOURCES += \
 	src/gl/gltexloaders.cpp \
 	src/gl/gltools.cpp \
 	src/gl/hknpcollision.cpp \
+	src/gl/hknpcollisionview.cpp \
+	src/gl/hkpackfile.cpp \
 	src/gl/renderer.cpp \
 	src/io/materialfile.cpp \
 	src/io/MeshFile.cpp \
