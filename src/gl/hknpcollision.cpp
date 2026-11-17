@@ -172,18 +172,32 @@ struct Affine
 	}
 };
 
+//! Work limits for one physics system, shared by all of its bodies, so a malformed file cannot freeze the viewer.
+//! The largest vanilla collision (precombined *_Physics.nif compressed meshes, ~600k triangles) needs about
+//! 4.5M line points, far below these limits.
+struct Budget
+{
+	qsizetype linePoints = 32 * 1024 * 1024;
+	qsizetype shapeVisits = 1024 * 1024;
+};
+
 class ShapeBuilder
 {
 public:
-	ShapeBuilder( const Packfile & p, QVector<Vector3> & l ) : pf( p ), lines( l ) {}
+	ShapeBuilder( const Packfile & p, QVector<Vector3> & l, Budget & b ) : pf( p ), lines( l ), budget( b ) {}
 
-	void addShape( quint32 shape, const Affine & xf, int depth = 0 );
+	void addShape( quint32 shape, const Affine & xf );
 
 private:
+	void addShapeContents( quint32 shape, const Affine & xf );
 	static constexpr int circleSegments = 24;
+	static constexpr int maxDepth = 16;
 
 	void line( const Affine & xf, const Vector3 & a, const Vector3 & b )
 	{
+		if ( budget.linePoints < 2 )
+			return;
+		budget.linePoints -= 2;
 		lines.append( xf * a );
 		lines.append( xf * b );
 	}
@@ -204,6 +218,10 @@ private:
 
 	const Packfile & pf;
 	QVector<Vector3> & lines;
+	Budget & budget;
+	// shapes on the current recursion path, so a compound that (directly or indirectly) contains itself
+	// is not followed again
+	QVector<quint32> path;
 };
 
 void ShapeBuilder::sphere( const Affine & xf, const Vector3 & c, float r )
@@ -230,7 +248,6 @@ void ShapeBuilder::capsule( const Affine & xf, const Vector3 & a, const Vector3 
 	u = u * r;
 	v = v * r;
 	const Vector3 dr = d * r;
-	const float halfPi = float( PI * 0.5 );
 
 	arc( xf, a, u, v, 0.0f, float( 2.0 * PI ), circleSegments );
 	arc( xf, b, u, v, 0.0f, float( 2.0 * PI ), circleSegments );
@@ -238,11 +255,13 @@ void ShapeBuilder::capsule( const Affine & xf, const Vector3 & a, const Vector3 
 	line( xf, a - u, b - u );
 	line( xf, a + v, b + v );
 	line( xf, a - v, b - v );
-	// end caps: half circles bulging away from the other end
-	arc( xf, a, u, -dr, -halfPi, halfPi, circleSegments / 2 );
-	arc( xf, a, v, -dr, -halfPi, halfPi, circleSegments / 2 );
-	arc( xf, b, u, dr, -halfPi, halfPi, circleSegments / 2 );
-	arc( xf, b, v, dr, -halfPi, halfPi, circleSegments / 2 );
+	// end caps: half circles from one side of the end ring, over the tip, to the other side
+	// (angle 0 = +u, pi/2 = the tip away from the other end, pi = -u)
+	const float pi = float( PI );
+	arc( xf, a, u, -dr, 0.0f, pi, circleSegments / 2 );
+	arc( xf, a, v, -dr, 0.0f, pi, circleSegments / 2 );
+	arc( xf, b, u, dr, 0.0f, pi, circleSegments / 2 );
+	arc( xf, b, v, dr, 0.0f, pi, circleSegments / 2 );
 }
 
 void ShapeBuilder::convex( quint32 shape, const Affine & xf, bool hasFaces, float radius )
@@ -365,6 +384,9 @@ void ShapeBuilder::compressedMesh( quint32 shape, const Affine & xf )
 		const quint32 sharedRef = pf.get<quint32>( sec + 76 );	// count in the low 8 bits, offset above
 		const quint32 primRef = pf.get<quint32>( sec + 80 );
 		const quint32 numPacked = pf.get<quint8>( sec + 88 );
+		// shared vertex indices are 16-bit; meshes with more than 65536 shared vertices (e.g. precombined
+		// *_Physics.nif) select a block of 65536 per section with its page byte
+		const quint32 page = pf.get<quint8>( sec + 92 );
 
 		// section-local vertex index -> position: packed vertices first (11/11/10 bits, section codec),
 		// then shared vertices (21/21/22 bits across the whole tree's domain)
@@ -381,7 +403,7 @@ void ShapeBuilder::compressedMesh( quint32 shape, const Affine & xf )
 			const quint32 si = ( sharedRef >> 8 ) + ( i - numPacked );
 			if ( si >= numSharedIndices )
 				return false;
-			const quint32 sv = pf.get<quint16>( sharedIndices + si * 2 );
+			const quint32 sv = ( page << 16 ) + pf.get<quint16>( sharedIndices + si * 2 );
 			if ( sv >= numSharedVerts )
 				return false;
 			const quint64 p = pf.get<quint64>( sharedVerts + sv * 8 );
@@ -401,6 +423,11 @@ void ShapeBuilder::compressedMesh( quint32 shape, const Affine & xf )
 			const quint32 idx[4] = { pf.get<quint8>( prim ), pf.get<quint8>( prim + 1 ),
 									 pf.get<quint8>( prim + 2 ), pf.get<quint8>( prim + 3 ) };
 			const int n = ( idx[2] == idx[3] ) ? 3 : 4;
+			// Skip degenerate primitives (repeated corners). Sections with flag 1 in precombined meshes hold
+			// [a, b, b, b] entries that are not surfaces (likely another primitive type); drawn as triangles they
+			// become long lines across the mesh.
+			if ( idx[0] == idx[1] || idx[1] == idx[2] || idx[0] == idx[2] || ( n == 4 && ( idx[0] == idx[3] || idx[1] == idx[3] ) ) )
+				continue;
 			Vector3 v[4];
 			bool ok = true;
 			for ( int k = 0; k < n && ok; k++ )
@@ -413,11 +440,19 @@ void ShapeBuilder::compressedMesh( quint32 shape, const Affine & xf )
 	}
 }
 
-void ShapeBuilder::addShape( quint32 shape, const Affine & xf, int depth )
+void ShapeBuilder::addShape( quint32 shape, const Affine & xf )
 {
-	if ( depth > 16 )
+	// guard against malformed files: too deep, a shape that contains itself, or too much work overall
+	if ( path.size() >= maxDepth || path.contains( shape ) || budget.shapeVisits <= 0 || budget.linePoints < 2 )
 		return;
+	budget.shapeVisits--;
+	path.append( shape );
+	addShapeContents( shape, xf );
+	path.removeLast();
+}
 
+void ShapeBuilder::addShapeContents( quint32 shape, const Affine & xf )
+{
 	const QByteArray cls = pf.className( shape );
 	// hknpShape::convexRadius
 	const float convexRadius = pf.get<float>( shape + 20 );
@@ -451,7 +486,7 @@ void ShapeBuilder::addShape( quint32 shape, const Affine & xf, int depth )
 			m.y = Vector3( 0.0f, s[1], 0.0f );
 			m.z = Vector3( 0.0f, 0.0f, s[2] );
 			m.t = pf.getVector3( shape + 80 );
-			addShape( core, xf * m, depth + 1 );
+			addShape( core, xf * m );
 		}
 
 	} else if ( cls == "hknpStaticCompoundShape" || cls == "hknpDynamicCompoundShape" ) {
@@ -475,7 +510,7 @@ void ShapeBuilder::addShape( quint32 shape, const Affine & xf, int depth )
 				m.y = m.y * s[1];
 				m.z = m.z * s[2];
 			}
-			addShape( child, xf * m, depth + 1 );
+			addShape( child, xf * m );
 		}
 
 	} else if ( !cls.isEmpty() ) {
@@ -504,36 +539,46 @@ void loadSystem( System & sys )
 	// The shape is drawn in the space of the collision object's node. The body position and orientation
 	// only record where the body was at export (e.g. the node's own translation, or the centre of a box
 	// whose vertices are already in node space), so applying them would place the shape twice.
-	quint32 start;
+	quint32 start = 0;
 	const quint32 n = pf.array( root + 64, start );
+	Budget budget;	// shared by all bodies of this system
 	for ( quint32 i = 0; i < n && i < 65536; i++ ) {
 		const quint32 b = start + i * 96;
 		HknpCollision::Body body;
 		body.filterInfo = pf.get<quint32>( b + 20 );
 		quint32 shape;
 		if ( pf.pointer( b, shape ) )
-			ShapeBuilder( pf, body.lines ).addShape( shape, Affine() );
+			ShapeBuilder( pf, body.lines, budget ).addShape( shape, Affine() );
 		sys.bodies.append( body );
 	}
 }
 
+// Wireframes per bhkPhysicsSystem, keyed by the address of its "Binary Data". Each entry keeps a copy of
+// that QByteArray, so the address stays unique while cached. Cleared when the scene is rebuilt.
+QHash<const char *, System> & cache()
+{
+	static QHash<const char *, System> c;
+	return c;
+}
+
 }	// namespace
+
+void HknpCollision::clearCache()
+{
+	cache().clear();
+}
 
 const HknpCollision::Body * HknpCollision::getBody( const QByteArray & data, quint32 bodyID )
 {
-	static QHash<const char *, System> cache;
-
 	if ( data.isEmpty() )
 		return nullptr;
 
-	auto i = cache.find( data.constData() );
-	if ( i == cache.end() ) {
-		if ( cache.size() >= 256 )
-			cache.clear();
+	auto i = cache().find( data.constData() );
+	if ( i == cache().end() ) {
 		System sys;
 		sys.data = data;
 		loadSystem( sys );
-		i = cache.insert( data.constData(), sys );
+		i = cache().insert( data.constData(), sys );
 	}
 	if ( bodyID >= quint32( i->bodies.size() ) )
 		return nullptr;

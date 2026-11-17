@@ -40,6 +40,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "gl/BSMesh.h"
 #include "gl/glparticles.h"
 #include "gl/gltex.h"
+#include "gl/hknpcollision.h"
 #include "model/nifmodel.h"
 #include "glview.h"
 #include "nifskope.h"
@@ -156,6 +157,7 @@ void Scene::clear( [[maybe_unused]] bool flushTextures )
 	textures->flush();
 	if ( renderer )
 		renderer->flushCache();
+	HknpCollision::clearCache();
 
 	sceneBoundsValid = timeBoundsValid = false;
 

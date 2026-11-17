@@ -24,6 +24,9 @@ namespace HknpCollision
 	 *  Results are cached per QByteArray, so this is cheap to call every frame.
 	 */
 	const Body * getBody( const QByteArray & data, quint32 bodyID );
+
+	//! Frees all cached wireframes; call when the scene is rebuilt (e.g. a file is loaded or closed)
+	void clearCache();
 }
 
 #endif
