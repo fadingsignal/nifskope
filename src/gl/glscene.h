@@ -97,6 +97,10 @@ public:
 
 	const NifModel *	nifModel = nullptr;
 
+	// True while a gizmo drag writes only a block's Translation, Rotation or Scale: shapes then keep their
+	// vertex data instead of reloading it from the model on every mouse move (see Shape::updateImpl)
+	bool	transformOnlyEdit = false;
+
 	enum SceneOption
 	{
 		None = 0x0,

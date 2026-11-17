@@ -2120,6 +2120,15 @@ void GLView::mouseMoveEvent( QMouseEvent * event )
 	auto	newPos = getQMouseEventPosition( event );
 
 	if ( gizmoActive != TransformGizmo::HandleNone ) {
+		// Intermediate drag values are not real edits: endGizmoDrag() restores the start value and commits the
+		// final one through the undo stack, which notifies every view once. While dragging:
+		//  - write in the Processing state, so no dataChanged is emitted. Otherwise the Block Details tree
+		//    re-checks the conditions of every row of the dragged block on each mouse move, which is very slow
+		//    for a shape with thousands of vertices;
+		//  - tell the scene that only the transform changes, so shapes keep their vertex data;
+		//  - update the scene directly.
+		model->setState( BaseModel::Processing );
+		scene->transformOnlyEdit = true;
 		if ( gizmo.getMode() == TransformGizmo::Rotate ) {
 			// Ctrl snaps to 5 degree increments
 			float snap = (event->modifiers() & Qt::ControlModifier) ? 5.0f : 0.0f;
@@ -2136,6 +2145,10 @@ void GLView::mouseMoveEvent( QMouseEvent * event )
 			Vector3 delta = gizmo.dragDelta( newPos );
 			model->set<Vector3>( gizmoValue, gizmoStartTranslation + gizmoParentInv * delta / gizmoParentScale );
 		}
+		model->restoreState();
+		scene->update( model, gizmoValue );
+		scene->transformOnlyEdit = false;
+		update();
 
 		lastPos = newPos;
 		return;

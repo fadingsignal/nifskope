@@ -407,7 +407,9 @@ void Shape::updateImpl( const NifModel * nif, const QModelIndex & index )
 {
 	Node::updateImpl( nif, index );
 
-	if ( index == iBlock ) {
+	// A transform-only edit (gizmo drag) changes nothing but the transform, which Node::updateImpl has already read;
+	// reloading the shape's data for it would re-read every vertex on each mouse move.
+	if ( index == iBlock && !scene->transformOnlyEdit ) {
 		shader = nullptr;	// Reset stored shader so it can reassess conditions
 
 		bslsp = nullptr;
