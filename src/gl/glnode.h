@@ -174,6 +174,12 @@ protected:
 						Scene * scene, FloatVector4 origin_color4fv, const Matrix4 & parentTransform );
 	void drawHvkConstraint( const NifModel * nif, const QModelIndex & iConstraint, Scene * scene );
 	void drawHvkNPCollision( const NifModel * nif, const QModelIndex & iObject );
+
+	// what the FO4 collision views in the block tree were last filled from (see updateImpl)
+	int hvkViewObject = -1;
+	const void * hvkViewData = nullptr;
+	quint32 hvkViewBodyID = quint32( -1 );
+	int hvkViewSystem = -1;
 	void drawFurnitureMarker( const NifModel * nif, const QModelIndex & iPosition );
 
 	QPointer<Node> parent;

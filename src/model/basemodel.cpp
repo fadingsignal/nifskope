@@ -531,6 +531,17 @@ QVariant BaseModel::headerData( int section, Qt::Orientation orientation, int ro
 	}
 }
 
+bool BaseModel::isReadOnlyView( const NifItem * item )
+{
+	// decoded views that are shown but never saved and cannot be edited, e.g. the Fallout 4 Havok data
+	// (nif.xml structs hknpView*, filled from bhkPhysicsSystem's Binary Data)
+	for ( const NifItem * i = item; i; i = i->parent() ) {
+		if ( i->isAbstract() && i->strType().startsWith( QLatin1StringView( "hknpView" ) ) )
+			return true;
+	}
+	return false;
+}
+
 Qt::ItemFlags BaseModel::flags( const QModelIndex & index ) const
 {
 	if ( !index.isValid() )
@@ -541,7 +552,7 @@ Qt::ItemFlags BaseModel::flags( const QModelIndex & index ) const
 	const NifItem * item = indexToItem( index );
 	if ( evalCondition(item) ){
 		flags = (Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-		if ( index.column() == ValueCol )
+		if ( index.column() == ValueCol && !isReadOnlyView( item ) )
 			flags |= Qt::ItemIsEditable;
 	}
 
